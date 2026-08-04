@@ -99,6 +99,10 @@ import {
   normalizeVisualTier,
   tryParseVisualConfig,
 } from '@/features/pricing/lib/tier-expr'
+import {
+  buildVideoPricingExpression,
+  type VideoPriceItem,
+} from '@/features/pricing/lib/video-pricing-expr'
 import { cn } from '@/lib/utils'
 
 const PRICE_SUFFIX = '$/1M tokens'
@@ -896,7 +900,8 @@ function RawExprEditor({ exprString, onChange }: RawExprEditorProps) {
             {t('Functions')}: <code>tier(name, value)</code>, <code>max</code>,{' '}
             <code>min</code>, <code>ceil</code>, <code>floor</code>,{' '}
             <code>abs</code>, <code>header(name)</code>,{' '}
-            <code>param(path)</code>, <code>has(source, text)</code>
+            <code>param(path)</code>, <code>number(value)</code>,{' '}
+            <code>has(source, text)</code>
           </div>
         </AlertDescription>
       </Alert>
@@ -1340,13 +1345,229 @@ function PresetSection({ applyPreset }: PresetSectionProps) {
                 className='h-7 text-xs'
                 onClick={() => applyPreset(preset)}
               >
-                {preset.label}
+                {t(preset.label)}
               </Button>
             ))}
           </div>
         ))}
       </div>
     </div>
+  )
+}
+
+type VideoPricingTemplateProps = {
+  applyExpression: (expr: string) => void
+}
+
+function VideoPricingTemplate({ applyExpression }: VideoPricingTemplateProps) {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const [durationPath, setDurationPath] = useState('duration')
+  const [optionPath, setOptionPath] = useState('resolution')
+  const [exchangeRate, setExchangeRate] = useState('1')
+  const [defaultDuration, setDefaultDuration] = useState('5')
+  const [maxDuration, setMaxDuration] = useState('3600')
+  const [items, setItems] = useState<VideoPriceItem[]>([
+    { id: 'video-price-1', value: '480p', pricePerSecond: '0.52' },
+    { id: 'video-price-2', value: '720p', pricePerSecond: '0.67' },
+  ])
+  const [fallbackItemId, setFallbackItemId] = useState('video-price-2')
+  const nextItemId = useRef(3)
+
+  const updateItem = (
+    id: string,
+    field: 'value' | 'pricePerSecond',
+    value: string
+  ) => {
+    setItems((current) =>
+      current.map((item) =>
+        item.id === id ? { ...item, [field]: value } : item
+      )
+    )
+  }
+
+  const removeItem = (id: string) => {
+    setItems((current) => {
+      if (current.length === 1) return current
+      const next = current.filter((item) => item.id !== id)
+      return next
+    })
+    if (fallbackItemId === id) {
+      const nextFallback = items.find((item) => item.id !== id)
+      if (nextFallback) setFallbackItemId(nextFallback.id)
+    }
+  }
+
+  const handleApply = () => {
+    const expression = buildVideoPricingExpression(
+      durationPath,
+      optionPath,
+      exchangeRate,
+      defaultDuration,
+      maxDuration,
+      items,
+      fallbackItemId
+    )
+    if (!expression) {
+      toast.error(t('Complete all video pricing template fields first'))
+      return
+    }
+    applyExpression(expression)
+  }
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <div className='border-border/70 bg-muted/20 rounded-lg border'>
+        <CollapsibleTrigger className='hover:bg-muted/50 flex w-full items-center justify-between px-3 py-2.5'>
+          <span className='text-sm font-medium'>
+            {t('Video duration pricing template')}
+          </span>
+          <ChevronDown
+            className={cn('size-4 transition-transform', open && 'rotate-180')}
+          />
+        </CollapsibleTrigger>
+        <CollapsibleContent className='border-t px-3 py-3'>
+          <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-5'>
+            <Field className='gap-1.5'>
+              <FieldLabel>{t('Duration field path')}</FieldLabel>
+              <Input
+                value={durationPath}
+                onChange={(event) => setDurationPath(event.target.value)}
+                placeholder='duration'
+              />
+            </Field>
+            <Field className='gap-1.5'>
+              <FieldLabel>{t('Pricing option field path')}</FieldLabel>
+              <Input
+                value={optionPath}
+                onChange={(event) => setOptionPath(event.target.value)}
+                placeholder='resolution'
+              />
+            </Field>
+            <Field className='gap-1.5'>
+              <FieldLabel>{t('Local currency per USD')}</FieldLabel>
+              <Input
+                type='number'
+                min={0.000001}
+                step='any'
+                value={exchangeRate}
+                onChange={(event) => setExchangeRate(event.target.value)}
+              />
+            </Field>
+            <Field className='gap-1.5'>
+              <FieldLabel>{t('Maximum billable seconds')}</FieldLabel>
+              <Input
+                type='number'
+                min={1}
+                max={3600}
+                value={maxDuration}
+                onChange={(event) => setMaxDuration(event.target.value)}
+              />
+            </Field>
+            <Field className='gap-1.5'>
+              <FieldLabel>{t('Default duration seconds')}</FieldLabel>
+              <Input
+                type='number'
+                min={1}
+                max={3600}
+                value={defaultDuration}
+                onChange={(event) => setDefaultDuration(event.target.value)}
+              />
+            </Field>
+          </div>
+
+          <div className='mt-3 space-y-2'>
+            <div className='grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2 text-xs font-medium'>
+              <span>{t('Option value')}</span>
+              <span>{t('Price per second')}</span>
+              <span className='sr-only'>{t('Actions')}</span>
+            </div>
+            {items.map((item) => (
+              <div
+                key={item.id}
+                className='grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2'
+              >
+                <Input
+                  value={item.value}
+                  onChange={(event) =>
+                    updateItem(item.id, 'value', event.target.value)
+                  }
+                  placeholder='720p'
+                  aria-label={t('Option value')}
+                />
+                <Input
+                  type='number'
+                  min={0}
+                  step='any'
+                  value={item.pricePerSecond}
+                  onChange={(event) =>
+                    updateItem(item.id, 'pricePerSecond', event.target.value)
+                  }
+                  placeholder='0.67'
+                  aria-label={t('Price per second')}
+                />
+                <Button
+                  type='button'
+                  variant='ghost'
+                  size='icon'
+                  disabled={items.length === 1}
+                  onClick={() => removeItem(item.id)}
+                  aria-label={t('Delete pricing option')}
+                >
+                  <Trash2 className='size-4' />
+                </Button>
+              </div>
+            ))}
+          </div>
+
+          <div className='mt-3 flex flex-wrap items-end gap-3'>
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              onClick={() => {
+                const id = `video-price-${nextItemId.current++}`
+                setItems((current) => [
+                  ...current,
+                  { id, value: '', pricePerSecond: '' },
+                ])
+              }}
+            >
+              <Plus className='size-4' />
+              {t('Add pricing option')}
+            </Button>
+            <Field className='min-w-52 gap-1.5'>
+              <FieldLabel>{t('Unknown value fallback')}</FieldLabel>
+              <Select
+                value={fallbackItemId}
+                onValueChange={(value) => {
+                  if (value) setFallbackItemId(value)
+                }}
+              >
+                <SelectTrigger size='sm'>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {items.map((item) => (
+                    <SelectItem key={item.id} value={item.id}>
+                      {item.value || t('Unnamed option')}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Button type='button' size='sm' onClick={handleApply}>
+              {t('Apply video pricing template')}
+            </Button>
+          </div>
+          <p className='text-muted-foreground mt-2 text-xs'>
+            {t(
+              'Field paths use gjson syntax. Set the exchange rate to 1 when prices are already in USD.'
+            )}
+          </p>
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
   )
 }
 
@@ -1362,6 +1583,7 @@ function CostEstimator({ effectiveExpr }: EstimatorProps) {
   const { t } = useTranslation()
   const [promptTokens, setPromptTokens] = useState(0)
   const [completionTokens, setCompletionTokens] = useState(0)
+  const [requestJson, setRequestJson] = useState('{}')
   const [extras, setExtras] = useState<ExtraTokenValues>({
     cacheReadTokens: 0,
     cacheCreateTokens: 0,
@@ -1376,11 +1598,18 @@ function CostEstimator({ effectiveExpr }: EstimatorProps) {
     () => exprUsesExtraVars(effectiveExpr),
     [effectiveExpr]
   )
+  const usesRequestParams = /\bparam\s*\(/.test(effectiveExpr)
 
   const result = useMemo(
     () =>
-      evalExprLocally(effectiveExpr, promptTokens, completionTokens, extras),
-    [effectiveExpr, promptTokens, completionTokens, extras]
+      evalExprLocally(
+        effectiveExpr,
+        promptTokens,
+        completionTokens,
+        extras,
+        requestJson
+      ),
+    [effectiveExpr, promptTokens, completionTokens, extras, requestJson]
   )
 
   return (
@@ -1438,6 +1667,22 @@ function CostEstimator({ effectiveExpr }: EstimatorProps) {
               </div>
             )
           })}
+        </div>
+      )}
+      {usesRequestParams && (
+        <div className='space-y-1'>
+          <Label className='text-xs'>{t('Estimator request JSON')}</Label>
+          <Textarea
+            value={requestJson}
+            onChange={(event) => setRequestJson(event.target.value)}
+            placeholder='{"duration":10,"resolution":"720p"}'
+            rows={3}
+            className='font-mono text-xs'
+            spellCheck={false}
+          />
+          <p className='text-muted-foreground text-xs'>
+            {t('Used only for previewing param(path); it is not saved.')}
+          </p>
         </div>
       )}
       <div
@@ -1508,6 +1753,7 @@ Important: len is NOT affected by auto-exclusion. Tier conditions should use len
 - ceil(x), floor(x), abs(x) — ceiling, floor, absolute value
 - header(name) — reads a request header
 - param(path) — reads a request body JSON path (gjson syntax)
+- number(value) — converts a JSON number or numeric string to a number
 - has(source, substr) — substring check
 - hour(tz), minute(tz), weekday(tz), month(tz), day(tz) — time functions, tz is a timezone like "Asia/Shanghai"
 
@@ -1639,7 +1885,9 @@ export const TieredPricingEditor = memo(function TieredPricingEditor({
   onRequestRuleExprChange,
 }: TieredPricingEditorProps) {
   const { t } = useTranslation()
-  const [editorMode, setEditorMode] = useState<EditorMode>('visual')
+  const [editorMode, setEditorMode] = useState<EditorMode>(() =>
+    currentExpr && !tryParseVisualConfig(currentExpr) ? 'raw' : 'visual'
+  )
   const [visualConfig, setVisualConfig] = useState<VisualConfig | null>(() =>
     tryParseVisualConfig(currentExpr)
   )
@@ -1765,6 +2013,12 @@ export const TieredPricingEditor = memo(function TieredPricingEditor({
     [onRequestRuleExprChange]
   )
 
+  const applyVideoPricingExpression = useCallback(
+    (expr: string) =>
+      applyPreset({ key: 'custom-video-pricing', label: '', expr }),
+    [applyPreset]
+  )
+
   const handleRuleGroupsChange = useCallback((next: RequestRuleGroup[]) => {
     setRequestRuleGroups(next)
   }, [])
@@ -1801,6 +2055,7 @@ export const TieredPricingEditor = memo(function TieredPricingEditor({
       </div>
 
       <PresetSection applyPreset={applyPreset} />
+      <VideoPricingTemplate applyExpression={applyVideoPricingExpression} />
 
       <div className='bg-muted/30 space-y-3 rounded-md border p-3'>
         {editorMode === 'visual' ? (

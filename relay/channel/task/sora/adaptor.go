@@ -7,6 +7,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -48,6 +49,8 @@ type responseTask struct {
 	CreatedAt          int64  `json:"created_at"`
 	CompletedAt        int64  `json:"completed_at,omitempty"`
 	ExpiresAt          int64  `json:"expires_at,omitempty"`
+	URL                string `json:"url,omitempty"`
+	ResultAssetURL     string `json:"result_asset_url,omitempty"`
 	Seconds            string `json:"seconds,omitempty"`
 	Size               string `json:"size,omitempty"`
 	RemixedFromVideoID string `json:"remixed_from_video_id,omitempty"`
@@ -66,12 +69,29 @@ type TaskAdaptor struct {
 	ChannelType int
 	apiKey      string
 	baseURL     string
+	submitPath  string
+	queryPath   string
+	remixPath   string
 }
 
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
 	a.ChannelType = info.ChannelType
 	a.baseURL = info.ChannelBaseUrl
 	a.apiKey = info.ApiKey
+	a.submitPath = "/v1/videos"
+	a.queryPath = "/v1/videos/{task_id}"
+	a.remixPath = "/v1/videos/{video_id}/remix"
+	if endpoints := info.ChannelOtherSettings.VideoTaskEndpoints; endpoints != nil {
+		if path := strings.TrimSpace(endpoints.SubmitPath); path != "" {
+			a.submitPath = path
+		}
+		if path := strings.TrimSpace(endpoints.QueryPath); path != "" {
+			a.queryPath = path
+		}
+		if path := strings.TrimSpace(endpoints.RemixPath); path != "" {
+			a.remixPath = path
+		}
+	}
 }
 
 func validateRemixRequest(c *gin.Context) *dto.TaskError {
@@ -131,9 +151,10 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 
 func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	if info.Action == constant.TaskActionRemix {
-		return fmt.Sprintf("%s/v1/videos/%s/remix", a.baseURL, info.OriginTaskID), nil
+		path := strings.Replace(a.remixPath, "{video_id}", url.PathEscape(info.OriginTaskID), 1)
+		return strings.TrimRight(a.baseURL, "/") + path, nil
 	}
-	return fmt.Sprintf("%s/v1/videos", a.baseURL), nil
+	return strings.TrimRight(a.baseURL, "/") + a.submitPath, nil
 }
 
 // BuildRequestHeader sets required headers.
@@ -263,7 +284,8 @@ func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy 
 		return nil, fmt.Errorf("invalid task_id")
 	}
 
-	uri := fmt.Sprintf("%s/v1/videos/%s", baseUrl, taskID)
+	escapedTaskID := url.PathEscape(taskID)
+	uri := strings.TrimRight(baseUrl, "/") + strings.Replace(a.queryPath, "{task_id}", escapedTaskID, 1)
 
 	req, err := http.NewRequest(http.MethodGet, uri, nil)
 	if err != nil {
@@ -302,9 +324,12 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 		taskResult.Status = model.TaskStatusQueued
 	case "processing", "in_progress":
 		taskResult.Status = model.TaskStatusInProgress
-	case "completed":
+	case "completed", "succeeded":
 		taskResult.Status = model.TaskStatusSuccess
-		// Url intentionally left empty — the caller constructs the proxy URL using the public task ID
+		taskResult.Url = resTask.URL
+		if taskResult.Url == "" {
+			taskResult.Url = resTask.ResultAssetURL
+		}
 	case "failed", "cancelled":
 		taskResult.Status = model.TaskStatusFailure
 		if resTask.Error != nil {
@@ -314,7 +339,7 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 		}
 	default:
 	}
-	if resTask.Progress > 0 && resTask.Progress < 100 {
+	if resTask.Progress > 0 && resTask.Progress <= 100 {
 		taskResult.Progress = fmt.Sprintf("%d%%", resTask.Progress)
 	}
 

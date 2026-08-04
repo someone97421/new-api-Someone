@@ -234,7 +234,7 @@ export function tryParseVisualConfig(
 
     const cfg = normalizeVisualConfig({ tiers })
     const regenerated = generateExprFromVisualConfig(cfg)
-    if (regenerated.replace(/\s+/g, '') !== body.replace(/\s+/g, '')) {
+    if (regenerated.replaceAll(/\s+/g, '') !== body.replaceAll(/\s+/g, '')) {
       return null
     }
     return cfg
@@ -272,7 +272,8 @@ export function evalExprLocally(
   exprStr: string,
   promptTokens: number,
   completionTokens: number,
-  extraTokenValues: ExtraTokenValues
+  extraTokenValues: ExtraTokenValues,
+  requestJson = '{}'
 ): EvalResult {
   try {
     if (!exprStr || !exprStr.trim()) {
@@ -288,11 +289,50 @@ export function evalExprLocally(
     const cacheCreate1hTokens = extraTokenValues.cacheCreate1hTokens || 0
     const len =
       promptTokens + cacheReadTokens + cacheCreateTokens + cacheCreate1hTokens
+    const requestBody = requestJson.trim() ? JSON.parse(requestJson) : {}
+    const param = (path: string): unknown => {
+      if (!path.trim()) return null
+      let current: unknown = requestBody
+      for (const segment of path.split('.')) {
+        if (segment === '#') {
+          return Array.isArray(current) ? current.length : null
+        }
+        if (Array.isArray(current) && /^\d+$/.test(segment)) {
+          current = current[Number(segment)]
+        } else if (
+          current !== null &&
+          typeof current === 'object' &&
+          Object.hasOwn(current, segment)
+        ) {
+          current = (current as Record<string, unknown>)[segment]
+        } else {
+          return null
+        }
+      }
+      return current ?? null
+    }
+    const number = (value: unknown): number => {
+      if (typeof value === 'number') return Number.isFinite(value) ? value : 0
+      if (typeof value !== 'string' || !value.trim()) return 0
+      const parsed = Number(value)
+      return Number.isFinite(parsed) ? parsed : 0
+    }
     const env: Record<string, unknown> = {
       p: promptTokens,
       c: completionTokens,
       len,
+      nil: null,
       tier: tierFn,
+      param,
+      number,
+      header: () => '',
+      has: (source: unknown, value: string) =>
+        source !== null && String(source).includes(value),
+      hour: () => new Date().getHours(),
+      minute: () => new Date().getMinutes(),
+      weekday: () => new Date().getDay(),
+      month: () => new Date().getMonth() + 1,
+      day: () => new Date().getDate(),
       max: Math.max,
       min: Math.min,
       abs: Math.abs,

@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // ---------------------------------------------------------------------------
@@ -156,6 +158,31 @@ func TestRequestProbeHelpers(t *testing.T) {
 	want := 1000*0.5 + 500*1.0*2
 	if math.Abs(cost-want) > 1e-6 {
 		t.Errorf("cost = %f, want %f", cost, want)
+	}
+}
+
+func TestNumberConvertsNumericRequestValues(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want float64
+	}{
+		{name: "JSON number", body: `{"duration":10}`, want: 10},
+		{name: "numeric string", body: `{"duration":"12.5"}`, want: 12.5},
+		{name: "invalid string", body: `{"duration":"invalid"}`, want: 0},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cost, _, err := billingexpr.RunExprWithRequest(
+				`number(param("duration"))`,
+				billingexpr.TokenParams{},
+				billingexpr.RequestInput{Body: []byte(test.body)},
+			)
+
+			require.NoError(t, err)
+			assert.Equal(t, test.want, cost)
+		})
 	}
 }
 

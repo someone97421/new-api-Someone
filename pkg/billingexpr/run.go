@@ -3,6 +3,7 @@ package billingexpr
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -81,6 +82,24 @@ func runProgram(prog *vm.Program, params TokenParams, request RequestInput) (flo
 				return nil
 			}
 			return result.Value()
+		},
+		"number": func(value interface{}) float64 {
+			switch typed := value.(type) {
+			case float64:
+				return typed
+			case float32:
+				return float64(typed)
+			case int:
+				return float64(typed)
+			case int64:
+				return float64(typed)
+			case string:
+				parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+				if err == nil && !math.IsNaN(parsed) && !math.IsInf(parsed, 0) {
+					return parsed
+				}
+			}
+			return 0
 		},
 		"has": func(source interface{}, substr string) bool {
 			if source == nil || substr == "" {

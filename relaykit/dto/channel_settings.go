@@ -85,6 +85,49 @@ type ChannelOtherSettings struct {
 	UpstreamModelUpdateLastRemovedModels  []string              `json:"upstream_model_update_last_removed_models,omitempty"`  // 上次检测到的可删除模型
 	UpstreamModelUpdateIgnoredModels      []string              `json:"upstream_model_update_ignored_models,omitempty"`       // 手动忽略的模型
 	AdvancedCustom                        *AdvancedCustomConfig `json:"advanced_custom,omitempty"`
+	VideoTaskEndpoints                    *VideoTaskEndpoints   `json:"video_task_endpoints,omitempty"`
+}
+
+// VideoTaskEndpoints overrides the relative upstream paths used by OpenAI/Sora
+// compatible asynchronous video channels. Empty fields keep adaptor defaults.
+type VideoTaskEndpoints struct {
+	SubmitPath  string `json:"submit_path,omitempty"`
+	QueryPath   string `json:"query_path,omitempty"`
+	ContentPath string `json:"content_path,omitempty"`
+	RemixPath   string `json:"remix_path,omitempty"`
+}
+
+func (e *VideoTaskEndpoints) Validate() error {
+	if e == nil {
+		return nil
+	}
+	for field, path := range map[string]string{
+		"submit_path":  strings.TrimSpace(e.SubmitPath),
+		"query_path":   strings.TrimSpace(e.QueryPath),
+		"content_path": strings.TrimSpace(e.ContentPath),
+		"remix_path":   strings.TrimSpace(e.RemixPath),
+	} {
+		if path == "" {
+			continue
+		}
+		parsed, err := url.Parse(path)
+		if err != nil || !strings.HasPrefix(path, "/") || parsed.IsAbs() || parsed.Host != "" || parsed.Fragment != "" {
+			return fmt.Errorf("video_task_endpoints.%s must be a relative path starting with /", field)
+		}
+	}
+	if e.SubmitPath != "" && strings.Contains(e.SubmitPath, "{task_id}") {
+		return fmt.Errorf("video_task_endpoints.submit_path must not contain {task_id}")
+	}
+	if e.QueryPath != "" && strings.Count(e.QueryPath, "{task_id}") != 1 {
+		return fmt.Errorf("video_task_endpoints.query_path must contain exactly one {task_id}")
+	}
+	if e.ContentPath != "" && strings.Count(e.ContentPath, "{task_id}") != 1 {
+		return fmt.Errorf("video_task_endpoints.content_path must contain exactly one {task_id}")
+	}
+	if e.RemixPath != "" && strings.Count(e.RemixPath, "{video_id}") != 1 {
+		return fmt.Errorf("video_task_endpoints.remix_path must contain exactly one {video_id}")
+	}
+	return nil
 }
 
 func (s *ChannelOtherSettings) IsOpenRouterEnterprise() bool {

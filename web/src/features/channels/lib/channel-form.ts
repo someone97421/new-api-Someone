@@ -193,6 +193,11 @@ function addRequiredIssue(
   })
 }
 
+function isRelativeTaskPath(value: string): boolean {
+  const path = value.trim()
+  return path === '' || (path.startsWith('/') && !path.startsWith('//'))
+}
+
 export const channelFormSchema = z
   .object({
     name: z.string().min(1, ERROR_MESSAGES.REQUIRED_NAME),
@@ -275,12 +280,68 @@ export const channelFormSchema = z
     allow_speed: z.boolean().optional(), // Anthropic: speed mode control
     claude_beta_query: z.boolean().optional(), // Anthropic: beta query passthrough
     disable_task_polling_sleep: z.boolean().optional(),
+    video_task_submit_path: z.string().optional(),
+    video_task_query_path: z.string().optional(),
+    video_task_content_path: z.string().optional(),
+    video_task_remix_path: z.string().optional(),
     // Upstream model update settings (stored in settings JSON)
     upstream_model_update_check_enabled: z.boolean().optional(),
     upstream_model_update_auto_sync_enabled: z.boolean().optional(),
     upstream_model_update_ignored_models: z.string().optional(),
   })
   .superRefine((data, ctx) => {
+    const supportsVideoTaskEndpoints = data.type === 1 || data.type === 55
+    if (supportsVideoTaskEndpoints) {
+      if (!isRelativeTaskPath(data.video_task_submit_path || '')) {
+        addRequiredIssue(
+          ctx,
+          'video_task_submit_path',
+          'Video task endpoint must be a relative path starting with /'
+        )
+      }
+      const queryPath = (data.video_task_query_path || '').trim()
+      if (!isRelativeTaskPath(queryPath)) {
+        addRequiredIssue(
+          ctx,
+          'video_task_query_path',
+          'Video task endpoint must be a relative path starting with /'
+        )
+      } else if (queryPath && queryPath.split('{task_id}').length !== 2) {
+        addRequiredIssue(
+          ctx,
+          'video_task_query_path',
+          'Video task query path must contain exactly one {task_id}'
+        )
+      }
+      const contentPath = (data.video_task_content_path || '').trim()
+      if (!isRelativeTaskPath(contentPath)) {
+        addRequiredIssue(
+          ctx,
+          'video_task_content_path',
+          'Video task endpoint must be a relative path starting with /'
+        )
+      } else if (contentPath && contentPath.split('{task_id}').length !== 2) {
+        addRequiredIssue(
+          ctx,
+          'video_task_content_path',
+          'Video content path must contain exactly one {task_id}'
+        )
+      }
+      const remixPath = (data.video_task_remix_path || '').trim()
+      if (!isRelativeTaskPath(remixPath)) {
+        addRequiredIssue(
+          ctx,
+          'video_task_remix_path',
+          'Video task endpoint must be a relative path starting with /'
+        )
+      } else if (remixPath && remixPath.split('{video_id}').length !== 2) {
+        addRequiredIssue(
+          ctx,
+          'video_task_remix_path',
+          'Video remix path must contain exactly one {video_id}'
+        )
+      }
+    }
     if (
       [3, 8, 36, 45, CHANNEL_TYPE_NEW_API].includes(data.type) &&
       !data.base_url?.trim()
@@ -447,6 +508,10 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   allow_speed: false,
   claude_beta_query: false,
   disable_task_polling_sleep: false,
+  video_task_submit_path: '',
+  video_task_query_path: '',
+  video_task_content_path: '',
+  video_task_remix_path: '',
   upstream_model_update_check_enabled: false,
   upstream_model_update_auto_sync_enabled: false,
   upstream_model_update_ignored_models: '',
@@ -487,8 +552,7 @@ export function transformChannelToFormDefaults(
         thinking_to_content: parsed.thinking_to_content || false,
         proxy: parsed.proxy || '',
         http_protocol: protocol,
-        http2_connection_shards:
-          protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
+        http2_connection_shards: protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
         system_prompt: parsed.system_prompt || '',
         system_prompt_override: parsed.system_prompt_override || false,
@@ -516,6 +580,10 @@ export function transformChannelToFormDefaults(
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
   let advancedCustom = ''
+  let videoTaskSubmitPath = ''
+  let videoTaskQueryPath = ''
+  let videoTaskContentPath = ''
+  let videoTaskRemixPath = ''
 
   if (channel.settings) {
     try {
@@ -544,6 +612,10 @@ export function transformChannelToFormDefaults(
       if (parsed.advanced_custom) {
         advancedCustom = stringifyAdvancedCustomConfig(parsed.advanced_custom)
       }
+      videoTaskSubmitPath = parsed.video_task_endpoints?.submit_path || ''
+      videoTaskQueryPath = parsed.video_task_endpoints?.query_path || ''
+      videoTaskContentPath = parsed.video_task_endpoints?.content_path || ''
+      videoTaskRemixPath = parsed.video_task_endpoints?.remix_path || ''
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error('Failed to parse channel settings:', error)
@@ -595,6 +667,10 @@ export function transformChannelToFormDefaults(
     upstream_model_update_auto_sync_enabled: upstreamModelUpdateAutoSyncEnabled,
     upstream_model_update_ignored_models: upstreamModelUpdateIgnoredModels,
     advanced_custom: advancedCustom,
+    video_task_submit_path: videoTaskSubmitPath,
+    video_task_query_path: videoTaskQueryPath,
+    video_task_content_path: videoTaskContentPath,
+    video_task_remix_path: videoTaskRemixPath,
   }
 }
 
@@ -718,6 +794,25 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
 
   settingsObj.disable_task_polling_sleep =
     formData.disable_task_polling_sleep === true
+
+  if (formData.type === 1 || formData.type === 55) {
+    const submitPath = formData.video_task_submit_path?.trim() || ''
+    const queryPath = formData.video_task_query_path?.trim() || ''
+    const contentPath = formData.video_task_content_path?.trim() || ''
+    const remixPath = formData.video_task_remix_path?.trim() || ''
+    if (submitPath || queryPath || contentPath || remixPath) {
+      settingsObj.video_task_endpoints = {
+        ...(submitPath ? { submit_path: submitPath } : {}),
+        ...(queryPath ? { query_path: queryPath } : {}),
+        ...(contentPath ? { content_path: contentPath } : {}),
+        ...(remixPath ? { remix_path: remixPath } : {}),
+      }
+    } else {
+      delete settingsObj.video_task_endpoints
+    }
+  } else {
+    delete settingsObj.video_task_endpoints
+  }
 
   // Upstream model update settings (for model-fetchable channel types)
   if (MODEL_FETCHABLE_TYPES.has(formData.type)) {

@@ -297,6 +297,10 @@ const SENSITIVE_FORM_FIELDS = [
   'allow_speed',
   'claude_beta_query',
   'disable_task_polling_sleep',
+  'video_task_submit_path',
+  'video_task_query_path',
+  'video_task_content_path',
+  'video_task_remix_path',
   'upstream_model_update_check_enabled',
   'upstream_model_update_auto_sync_enabled',
   'upstream_model_update_ignored_models',
@@ -749,6 +753,10 @@ export function ChannelMutateDrawer({
   const currentDisableTaskPollingSleep = form.watch(
     'disable_task_polling_sleep'
   )
+  const currentVideoTaskSubmitPath = form.watch('video_task_submit_path')
+  const currentVideoTaskQueryPath = form.watch('video_task_query_path')
+  const currentVideoTaskContentPath = form.watch('video_task_content_path')
+  const currentVideoTaskRemixPath = form.watch('video_task_remix_path')
   const currentProxy = form.watch('proxy')
   const currentHttpProtocol = form.watch('http_protocol')
   const currentHttp2ConnectionShards = form.watch('http2_connection_shards')
@@ -1019,6 +1027,10 @@ export function ChannelMutateDrawer({
     currentThinkingToContent ||
     currentPassThroughBodyEnabled ||
     currentDisableTaskPollingSleep ||
+    currentVideoTaskSubmitPath?.trim() ||
+    currentVideoTaskQueryPath?.trim() ||
+    currentVideoTaskContentPath?.trim() ||
+    currentVideoTaskRemixPath?.trim() ||
     currentProxy?.trim() ||
     currentSystemPrompt?.trim() ||
     currentSystemPromptOverride ||
@@ -4168,6 +4180,117 @@ export function ChannelMutateDrawer({
                                   </FormItem>
                                 )}
                               />
+
+                              {(currentType === 1 || currentType === 55) && (
+                                <div className='space-y-4 px-4 py-4'>
+                                  <div className='space-y-1'>
+                                    <div className='text-sm font-medium'>
+                                      {t('Video task endpoints')}
+                                    </div>
+                                    <p className='text-muted-foreground text-xs'>
+                                      {t(
+                                        'Override upstream video task paths when the provider does not support the default OpenAI Videos endpoints.'
+                                      )}
+                                    </p>
+                                  </div>
+                                  <FormField
+                                    control={form.control}
+                                    name='video_task_submit_path'
+                                    render={({ field }) => (
+                                      <FormItem>
+                                        <FormLabel>
+                                          {t('Video task submit path')}
+                                        </FormLabel>
+                                        <FormControl>
+                                          <Input
+                                            placeholder='/v1/videos'
+                                            className='font-mono'
+                                            {...field}
+                                          />
+                                        </FormControl>
+                                        <FormDescription>
+                                          {t(
+                                            'Leave blank to use /v1/videos. Only relative paths starting with / are allowed.'
+                                          )}
+                                        </FormDescription>
+                                        <FormMessage />
+                                      </FormItem>
+                                    )}
+                                  />
+                                  <FormField
+                                    control={form.control}
+                                    name='video_task_query_path'
+                                    render={({ field }) => (
+                                      <FormItem>
+                                        <FormLabel>
+                                          {t('Video task query path')}
+                                        </FormLabel>
+                                        <FormControl>
+                                          <Input
+                                            placeholder='/v1/videos/{task_id}'
+                                            className='font-mono'
+                                            {...field}
+                                          />
+                                        </FormControl>
+                                        <FormDescription>
+                                          {t(
+                                            'Leave blank to use /v1/videos/{task_id}. A custom path must contain {task_id} exactly once.'
+                                          )}
+                                        </FormDescription>
+                                        <FormMessage />
+                                      </FormItem>
+                                    )}
+                                  />
+                                  <FormField
+                                    control={form.control}
+                                    name='video_task_content_path'
+                                    render={({ field }) => (
+                                      <FormItem>
+                                        <FormLabel>
+                                          {t('Video content path')}
+                                        </FormLabel>
+                                        <FormControl>
+                                          <Input
+                                            placeholder='/v1/videos/{task_id}/content'
+                                            className='font-mono'
+                                            {...field}
+                                          />
+                                        </FormControl>
+                                        <FormDescription>
+                                          {t(
+                                            'Leave blank to use /v1/videos/{task_id}/content. A custom path must contain {task_id} exactly once.'
+                                          )}
+                                        </FormDescription>
+                                        <FormMessage />
+                                      </FormItem>
+                                    )}
+                                  />
+                                  <FormField
+                                    control={form.control}
+                                    name='video_task_remix_path'
+                                    render={({ field }) => (
+                                      <FormItem>
+                                        <FormLabel>
+                                          {t('Video remix path')}
+                                        </FormLabel>
+                                        <FormControl>
+                                          <Input
+                                            placeholder='/v1/videos/{video_id}/remix'
+                                            className='font-mono'
+                                            {...field}
+                                          />
+                                        </FormControl>
+                                        <FormDescription>
+                                          {t(
+                                            'Leave blank to use /v1/videos/{video_id}/remix. A custom path must contain {video_id} exactly once.'
+                                          )}
+                                        </FormDescription>
+                                        <FormMessage />
+                                      </FormItem>
+                                    )}
+                                  />
+                                </div>
+                              )}
                             </div>
 
                             <FormField
@@ -4233,9 +4356,7 @@ export function ChannelMutateDrawer({
                                         <SelectValue />
                                       </SelectTrigger>
                                     </FormControl>
-                                    <SelectContent
-                                      alignItemWithTrigger={false}
-                                    >
+                                    <SelectContent alignItemWithTrigger={false}>
                                       <SelectGroup>
                                         <SelectItem value='auto'>
                                           {t('Auto')}

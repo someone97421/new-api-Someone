@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 
@@ -112,7 +113,18 @@ func VideoProxy(c *gin.Context) {
 			return
 		}
 	case constant.ChannelTypeOpenAI, constant.ChannelTypeSora:
-		videoURL = fmt.Sprintf("%s/v1/videos/%s/content", baseURL, task.GetUpstreamTaskID())
+		videoURL = strings.TrimSpace(task.GetResultURL())
+		if videoURL == taskcommon.BuildProxyURL(task.TaskID) {
+			videoURL = ""
+		}
+		if videoURL == "" {
+			contentPath := "/v1/videos/{task_id}/content"
+			if endpoints := channel.GetOtherSettings().VideoTaskEndpoints; endpoints != nil && strings.TrimSpace(endpoints.ContentPath) != "" {
+				contentPath = strings.TrimSpace(endpoints.ContentPath)
+			}
+			contentPath = strings.Replace(contentPath, "{task_id}", url.PathEscape(task.GetUpstreamTaskID()), 1)
+			videoURL = strings.TrimRight(baseURL, "/") + contentPath
+		}
 		req.Header.Set("Authorization", "Bearer "+channel.Key)
 	default:
 		// Video URL is stored in PrivateData.ResultURL (fallback to FailReason for old data)

@@ -109,6 +109,14 @@ export interface ChannelOtherSettings {
   upstream_model_update_last_check_time?: number
   upstream_model_update_last_detected_models?: string[]
   advanced_custom?: AdvancedCustomConfig
+  video_task_endpoints?: VideoTaskEndpoints
+}
+
+export interface VideoTaskEndpoints {
+  submit_path?: string
+  query_path?: string
+  content_path?: string
+  remix_path?: string
 }
 
 export interface AdvancedCustomConfig {
