@@ -982,6 +982,14 @@ func (channel *Channel) ValidateSettings() error {
 			return err
 		}
 	}
+	if channelOtherSettings.ImageTaskEndpoints != nil {
+		if channel.Type != constant.ChannelTypeOpenAI && channel.Type != constant.ChannelTypeAdvancedCustom {
+			return fmt.Errorf("image_task_endpoints are only supported for OpenAI or Advanced Custom channels")
+		}
+		if err := channelOtherSettings.ImageTaskEndpoints.Validate(); err != nil {
+			return err
+		}
+	}
 	if channel.Type == constant.ChannelTypeAdvancedCustom && channelOtherSettings.UpstreamModelUpdateCheckEnabled {
 		if _, ok := channelOtherSettings.AdvancedCustom.ModelListRoute(); !ok {
 			return fmt.Errorf("advanced custom channels require a %s route when upstream model update checks are enabled", dto.AdvancedCustomModelListPath)

@@ -301,6 +301,7 @@ const SENSITIVE_FORM_FIELDS = [
   'video_task_query_path',
   'video_task_content_path',
   'video_task_remix_path',
+  'image_task_query_path',
   'upstream_model_update_check_enabled',
   'upstream_model_update_auto_sync_enabled',
   'upstream_model_update_ignored_models',
@@ -757,6 +758,7 @@ export function ChannelMutateDrawer({
   const currentVideoTaskQueryPath = form.watch('video_task_query_path')
   const currentVideoTaskContentPath = form.watch('video_task_content_path')
   const currentVideoTaskRemixPath = form.watch('video_task_remix_path')
+  const currentImageTaskQueryPath = form.watch('image_task_query_path')
   const currentProxy = form.watch('proxy')
   const currentHttpProtocol = form.watch('http_protocol')
   const currentHttp2ConnectionShards = form.watch('http2_connection_shards')
@@ -1031,6 +1033,7 @@ export function ChannelMutateDrawer({
     currentVideoTaskQueryPath?.trim() ||
     currentVideoTaskContentPath?.trim() ||
     currentVideoTaskRemixPath?.trim() ||
+    currentImageTaskQueryPath?.trim() ||
     currentProxy?.trim() ||
     currentSystemPrompt?.trim() ||
     currentSystemPromptOverride ||
@@ -4283,6 +4286,45 @@ export function ChannelMutateDrawer({
                                         <FormDescription>
                                           {t(
                                             'Leave blank to use /v1/videos/{video_id}/remix. A custom path must contain {video_id} exactly once.'
+                                          )}
+                                        </FormDescription>
+                                        <FormMessage />
+                                      </FormItem>
+                                    )}
+                                  />
+                                </div>
+                              )}
+
+                              {(currentType === 1 || currentType === 58) && (
+                                <div className='space-y-4 px-4 py-4'>
+                                  <div className='space-y-1'>
+                                    <div className='text-sm font-medium'>
+                                      {t('Image task endpoints')}
+                                    </div>
+                                    <p className='text-muted-foreground text-xs'>
+                                      {t(
+                                        'Configure the upstream polling path for asynchronous image tasks.'
+                                      )}
+                                    </p>
+                                  </div>
+                                  <FormField
+                                    control={form.control}
+                                    name='image_task_query_path'
+                                    render={({ field }) => (
+                                      <FormItem>
+                                        <FormLabel>
+                                          {t('Image task query path')}
+                                        </FormLabel>
+                                        <FormControl>
+                                          <Input
+                                            placeholder='/v1/images/generations/{task_id}'
+                                            className='font-mono'
+                                            {...field}
+                                          />
+                                        </FormControl>
+                                        <FormDescription>
+                                          {t(
+                                            'Clients query /v1/images/generations/{task_id}?model={model}. The upstream path must contain {task_id} exactly once.'
                                           )}
                                         </FormDescription>
                                         <FormMessage />

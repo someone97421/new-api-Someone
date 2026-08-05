@@ -180,7 +180,11 @@ func channelSupportsRequestPath(channel *model.Channel, requestPath string, requ
 	if channel.Type != constant.ChannelTypeAdvancedCustom {
 		return true
 	}
-	config := channel.GetOtherSettings().AdvancedCustom
+	otherSettings := channel.GetOtherSettings()
+	if otherSettings.ImageTaskEndpoints != nil && otherSettings.ImageTaskEndpoints.SupportsPublicQueryPath(requestPath) {
+		return true
+	}
+	config := otherSettings.AdvancedCustom
 	return config != nil && config.SupportsPathForModel(requestPath, requestModel)
 }
 
@@ -336,6 +340,12 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		if _, ok := c.Get("relay_mode"); !ok {
 			c.Set("relay_mode", relayMode)
 		}
+	} else if c.Request.Method == http.MethodGet && strings.HasPrefix(c.Request.URL.Path, dto.OpenAIImageTaskQueryPathPrefix) {
+		modelRequest.Model = strings.TrimSpace(c.Query("model"))
+		if modelRequest.Model == "" {
+			return nil, false, errors.New("model query parameter is required for image task queries")
+		}
+		c.Set("relay_mode", relayconstant.RelayModeImagesGenerations)
 	} else if strings.HasPrefix(c.Request.URL.Path, "/v1beta/models/") || strings.HasPrefix(c.Request.URL.Path, "/v1/models/") {
 		// Gemini API 路径处理: /v1beta/models/gemini-2.0-flash:generateContent
 		relayMode := relayconstant.RelayModeGemini

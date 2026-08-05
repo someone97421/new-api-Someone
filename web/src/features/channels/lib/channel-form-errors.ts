@@ -55,6 +55,7 @@ const ADVANCED_SETTINGS_FIELDS = new Set<FieldPath<ChannelFormValues>>([
   'video_task_query_path',
   'video_task_content_path',
   'video_task_remix_path',
+  'image_task_query_path',
   'upstream_model_update_check_enabled',
   'upstream_model_update_auto_sync_enabled',
   'upstream_model_update_ignored_models',

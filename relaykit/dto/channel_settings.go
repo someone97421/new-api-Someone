@@ -86,6 +86,35 @@ type ChannelOtherSettings struct {
 	UpstreamModelUpdateIgnoredModels      []string              `json:"upstream_model_update_ignored_models,omitempty"`       // 手动忽略的模型
 	AdvancedCustom                        *AdvancedCustomConfig `json:"advanced_custom,omitempty"`
 	VideoTaskEndpoints                    *VideoTaskEndpoints   `json:"video_task_endpoints,omitempty"`
+	ImageTaskEndpoints                    *ImageTaskEndpoints   `json:"image_task_endpoints,omitempty"`
+}
+
+const OpenAIImageTaskQueryPathPrefix = "/v1/images/generations/"
+
+// ImageTaskEndpoints configures the relative upstream path used to query an
+// asynchronous image task. The public gateway endpoint remains OpenAI-style;
+// only the upstream path varies by provider.
+type ImageTaskEndpoints struct {
+	QueryPath string `json:"query_path,omitempty"`
+}
+
+func (e *ImageTaskEndpoints) Validate() error {
+	if e == nil || strings.TrimSpace(e.QueryPath) == "" {
+		return nil
+	}
+	if err := validateRelativeTaskEndpoint("image_task_endpoints.query_path", e.QueryPath); err != nil {
+		return err
+	}
+	if strings.Count(e.QueryPath, "{task_id}") != 1 {
+		return fmt.Errorf("image_task_endpoints.query_path must contain exactly one {task_id}")
+	}
+	return nil
+}
+
+func (e *ImageTaskEndpoints) SupportsPublicQueryPath(requestPath string) bool {
+	return e != nil && strings.TrimSpace(e.QueryPath) != "" &&
+		strings.HasPrefix(requestPath, OpenAIImageTaskQueryPathPrefix) &&
+		strings.TrimPrefix(requestPath, OpenAIImageTaskQueryPathPrefix) != ""
 }
 
 // VideoTaskEndpoints overrides the relative upstream paths used by OpenAI/Sora
@@ -110,9 +139,8 @@ func (e *VideoTaskEndpoints) Validate() error {
 		if path == "" {
 			continue
 		}
-		parsed, err := url.Parse(path)
-		if err != nil || !strings.HasPrefix(path, "/") || parsed.IsAbs() || parsed.Host != "" || parsed.Fragment != "" {
-			return fmt.Errorf("video_task_endpoints.%s must be a relative path starting with /", field)
+		if err := validateRelativeTaskEndpoint("video_task_endpoints."+field, path); err != nil {
+			return err
 		}
 	}
 	if e.SubmitPath != "" && strings.Contains(e.SubmitPath, "{task_id}") {
@@ -126,6 +154,15 @@ func (e *VideoTaskEndpoints) Validate() error {
 	}
 	if e.RemixPath != "" && strings.Count(e.RemixPath, "{video_id}") != 1 {
 		return fmt.Errorf("video_task_endpoints.remix_path must contain exactly one {video_id}")
+	}
+	return nil
+}
+
+func validateRelativeTaskEndpoint(field string, path string) error {
+	path = strings.TrimSpace(path)
+	parsed, err := url.Parse(path)
+	if err != nil || !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") || parsed.IsAbs() || parsed.Host != "" || parsed.Fragment != "" {
+		return fmt.Errorf("%s must be a relative path starting with /", field)
 	}
 	return nil
 }

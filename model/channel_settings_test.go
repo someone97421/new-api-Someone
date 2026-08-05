@@ -163,3 +163,74 @@ func TestChannelValidateSettingsRejectsInvalidVideoTaskEndpoints(t *testing.T) {
 		})
 	}
 }
+
+func TestChannelValidateSettingsRejectsInvalidImageTaskEndpoints(t *testing.T) {
+	tests := []struct {
+		name        string
+		channelType int
+		endpoints   dto.ImageTaskEndpoints
+		wantErr     string
+	}{
+		{
+			name:        "advanced custom accepts image query endpoint",
+			channelType: constant.ChannelTypeAdvancedCustom,
+			endpoints: dto.ImageTaskEndpoints{
+				QueryPath: "/v1/image/generations/{task_id}",
+			},
+		},
+		{
+			name:        "openai accepts image query endpoint",
+			channelType: constant.ChannelTypeOpenAI,
+			endpoints: dto.ImageTaskEndpoints{
+				QueryPath: "/v1/tasks/{task_id}",
+			},
+		},
+		{
+			name:        "query path requires task placeholder",
+			channelType: constant.ChannelTypeAdvancedCustom,
+			endpoints: dto.ImageTaskEndpoints{
+				QueryPath: "/v1/image/generations",
+			},
+			wantErr: "{task_id}",
+		},
+		{
+			name:        "absolute query URL rejected",
+			channelType: constant.ChannelTypeAdvancedCustom,
+			endpoints: dto.ImageTaskEndpoints{
+				QueryPath: "https://evil.example/tasks/{task_id}",
+			},
+			wantErr: "query_path",
+		},
+		{
+			name:        "unsupported channel type rejected",
+			channelType: constant.ChannelTypeGemini,
+			endpoints: dto.ImageTaskEndpoints{
+				QueryPath: "/v1/tasks/{task_id}",
+			},
+			wantErr: "OpenAI or Advanced Custom",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			channel := &Channel{Type: tt.channelType}
+			otherSettings := dto.ChannelOtherSettings{ImageTaskEndpoints: &tt.endpoints}
+			if tt.channelType == constant.ChannelTypeAdvancedCustom {
+				otherSettings.AdvancedCustom = &dto.AdvancedCustomConfig{Routes: []dto.AdvancedCustomRoute{{
+					IncomingPath: "/v1/images/generations",
+					UpstreamPath: "/v1/images/generations",
+					Converter:    "none",
+				}}}
+			}
+			channel.SetOtherSettings(otherSettings)
+
+			err := channel.ValidateSettings()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}

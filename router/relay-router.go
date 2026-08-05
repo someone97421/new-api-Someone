@@ -117,6 +117,7 @@ func SetRelayRouter(router *gin.Engine) {
 		httpRouter.POST("/images/generations", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatOpenAIImage)
 		})
+		httpRouter.GET("/images/generations/:task_id", controller.RelayImageTaskFetch)
 		httpRouter.POST("/images/edits", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatOpenAIImage)
 		})

@@ -172,21 +172,25 @@ func filterAbilitiesByRequestPathAndModel(abilities []Ability, requestPath strin
 		return abilities
 	}
 
-	advancedConfigs := make(map[int]*dto.AdvancedCustomConfig)
+	advancedSettings := make(map[int]dto.ChannelOtherSettings)
 	for _, channel := range channels {
 		if channel.Type == constant.ChannelTypeAdvancedCustom {
-			advancedConfigs[channel.Id] = channel.GetOtherSettings().AdvancedCustom
+			advancedSettings[channel.Id] = channel.GetOtherSettings()
 		}
 	}
 
 	filtered := make([]Ability, 0, len(abilities))
 	for _, ability := range abilities {
-		config, isAdvancedCustom := advancedConfigs[ability.ChannelId]
+		settings, isAdvancedCustom := advancedSettings[ability.ChannelId]
 		if !isAdvancedCustom {
 			filtered = append(filtered, ability)
 			continue
 		}
-		if config != nil && config.SupportsPathForModel(requestPath, model) {
+		if settings.ImageTaskEndpoints != nil && settings.ImageTaskEndpoints.SupportsPublicQueryPath(requestPath) {
+			filtered = append(filtered, ability)
+			continue
+		}
+		if settings.AdvancedCustom != nil && settings.AdvancedCustom.SupportsPathForModel(requestPath, model) {
 			filtered = append(filtered, ability)
 		}
 	}

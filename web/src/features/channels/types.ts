@@ -110,6 +110,11 @@ export interface ChannelOtherSettings {
   upstream_model_update_last_detected_models?: string[]
   advanced_custom?: AdvancedCustomConfig
   video_task_endpoints?: VideoTaskEndpoints
+  image_task_endpoints?: ImageTaskEndpoints
+}
+
+export interface ImageTaskEndpoints {
+  query_path?: string
 }
 
 export interface VideoTaskEndpoints {

@@ -21,6 +21,7 @@ var channelsIDM map[int]*Channel                     // all channels include dis
 // channel2advancedCustomConfig caches parsed Advanced Custom (type 58) configs so
 // path-aware selection avoids re-parsing JSON per request. Refreshed on full sync.
 var channel2advancedCustomConfig map[int]*dto.AdvancedCustomConfig
+var channel2imageTaskEndpoints map[int]*dto.ImageTaskEndpoints
 var channelSyncLock sync.RWMutex
 
 func InitChannelCache() {
@@ -30,13 +31,18 @@ func InitChannelCache() {
 	}
 	newChannelId2channel := make(map[int]*Channel)
 	newChannel2advancedCustomConfig := make(map[int]*dto.AdvancedCustomConfig)
+	newChannel2imageTaskEndpoints := make(map[int]*dto.ImageTaskEndpoints)
 	var channels []*Channel
 	DB.Find(&channels)
 	for _, channel := range channels {
 		newChannelId2channel[channel.Id] = channel
 		if channel.Type == constant.ChannelTypeAdvancedCustom {
-			if config := channel.GetOtherSettings().AdvancedCustom; config != nil {
+			otherSettings := channel.GetOtherSettings()
+			if config := otherSettings.AdvancedCustom; config != nil {
 				newChannel2advancedCustomConfig[channel.Id] = config
+			}
+			if endpoints := otherSettings.ImageTaskEndpoints; endpoints != nil {
+				newChannel2imageTaskEndpoints[channel.Id] = endpoints
 			}
 		}
 	}
@@ -94,6 +100,7 @@ func InitChannelCache() {
 	}
 	channelsIDM = newChannelId2channel
 	channel2advancedCustomConfig = newChannel2advancedCustomConfig
+	channel2imageTaskEndpoints = newChannel2imageTaskEndpoints
 	channelSyncLock.Unlock()
 	// Lock ordering: InvalidatePricingCache acquires updatePricingLock, and
 	// GetPricing (holding updatePricingLock) nests channelSyncLock.RLock via
@@ -229,6 +236,10 @@ func filterChannelsByRequestPathAndModel(channels []int, requestPath string, mod
 			filtered = append(filtered, channelId)
 			continue
 		}
+		if endpoints := channel2imageTaskEndpoints[channelId]; endpoints != nil && endpoints.SupportsPublicQueryPath(requestPath) {
+			filtered = append(filtered, channelId)
+			continue
+		}
 		if config := channel2advancedCustomConfig[channelId]; config != nil && config.SupportsPathForModel(requestPath, model) {
 			filtered = append(filtered, channelId)
 		}
@@ -313,10 +324,18 @@ func CacheUpdateChannel(channel *Channel) {
 	if channel2advancedCustomConfig == nil {
 		channel2advancedCustomConfig = make(map[int]*dto.AdvancedCustomConfig)
 	}
+	if channel2imageTaskEndpoints == nil {
+		channel2imageTaskEndpoints = make(map[int]*dto.ImageTaskEndpoints)
+	}
 	delete(channel2advancedCustomConfig, channel.Id)
+	delete(channel2imageTaskEndpoints, channel.Id)
 	if channel.Type == constant.ChannelTypeAdvancedCustom {
-		if config := channel.GetOtherSettings().AdvancedCustom; config != nil {
+		otherSettings := channel.GetOtherSettings()
+		if config := otherSettings.AdvancedCustom; config != nil {
 			channel2advancedCustomConfig[channel.Id] = config
+		}
+		if endpoints := otherSettings.ImageTaskEndpoints; endpoints != nil {
+			channel2imageTaskEndpoints[channel.Id] = endpoints
 		}
 	}
 	logger.LogDebug(nil, "CacheUpdateChannel after: id=%d, name=%s, status=%d, polling_index=%d", channel.Id, channel.Name, channel.Status, channel.ChannelInfo.MultiKeyPollingIndex)

@@ -284,6 +284,7 @@ export const channelFormSchema = z
     video_task_query_path: z.string().optional(),
     video_task_content_path: z.string().optional(),
     video_task_remix_path: z.string().optional(),
+    image_task_query_path: z.string().optional(),
     // Upstream model update settings (stored in settings JSON)
     upstream_model_update_check_enabled: z.boolean().optional(),
     upstream_model_update_auto_sync_enabled: z.boolean().optional(),
@@ -339,6 +340,24 @@ export const channelFormSchema = z
           ctx,
           'video_task_remix_path',
           'Video remix path must contain exactly one {video_id}'
+        )
+      }
+    }
+    const supportsImageTaskEndpoints =
+      data.type === 1 || data.type === CHANNEL_TYPE_ADVANCED_CUSTOM
+    if (supportsImageTaskEndpoints) {
+      const queryPath = (data.image_task_query_path || '').trim()
+      if (!isRelativeTaskPath(queryPath)) {
+        addRequiredIssue(
+          ctx,
+          'image_task_query_path',
+          'Image task endpoint must be a relative path starting with /'
+        )
+      } else if (queryPath && queryPath.split('{task_id}').length !== 2) {
+        addRequiredIssue(
+          ctx,
+          'image_task_query_path',
+          'Image task query path must contain exactly one {task_id}'
         )
       }
     }
@@ -512,6 +531,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   video_task_query_path: '',
   video_task_content_path: '',
   video_task_remix_path: '',
+  image_task_query_path: '',
   upstream_model_update_check_enabled: false,
   upstream_model_update_auto_sync_enabled: false,
   upstream_model_update_ignored_models: '',
@@ -584,6 +604,7 @@ export function transformChannelToFormDefaults(
   let videoTaskQueryPath = ''
   let videoTaskContentPath = ''
   let videoTaskRemixPath = ''
+  let imageTaskQueryPath = ''
 
   if (channel.settings) {
     try {
@@ -616,6 +637,7 @@ export function transformChannelToFormDefaults(
       videoTaskQueryPath = parsed.video_task_endpoints?.query_path || ''
       videoTaskContentPath = parsed.video_task_endpoints?.content_path || ''
       videoTaskRemixPath = parsed.video_task_endpoints?.remix_path || ''
+      imageTaskQueryPath = parsed.image_task_endpoints?.query_path || ''
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error('Failed to parse channel settings:', error)
@@ -671,6 +693,7 @@ export function transformChannelToFormDefaults(
     video_task_query_path: videoTaskQueryPath,
     video_task_content_path: videoTaskContentPath,
     video_task_remix_path: videoTaskRemixPath,
+    image_task_query_path: imageTaskQueryPath,
   }
 }
 
@@ -812,6 +835,17 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     }
   } else {
     delete settingsObj.video_task_endpoints
+  }
+
+  if (formData.type === 1 || formData.type === CHANNEL_TYPE_ADVANCED_CUSTOM) {
+    const queryPath = formData.image_task_query_path?.trim() || ''
+    if (queryPath) {
+      settingsObj.image_task_endpoints = { query_path: queryPath }
+    } else {
+      delete settingsObj.image_task_endpoints
+    }
+  } else {
+    delete settingsObj.image_task_endpoints
   }
 
   // Upstream model update settings (for model-fetchable channel types)
