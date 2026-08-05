@@ -29,6 +29,10 @@ import {
   type ParsedTier,
 } from './billing-expr'
 import { getDisplayGroupRatio } from './model-helpers'
+import {
+  parseVideoPricingExpression,
+  type ParsedVideoPricingExpression,
+} from './video-pricing-expr'
 
 type DynamicPriceOptions = {
   tokenUnit: TokenUnit
@@ -58,6 +62,22 @@ export type DynamicPricingSummary = {
   entries: DynamicPriceEntry[]
   primaryEntries: DynamicPriceEntry[]
   secondaryEntries: DynamicPriceEntry[]
+  videoPricing: VideoPricingSummary | null
+}
+
+export type VideoPriceEntry = {
+  optionValue: string
+  tierLabel: string
+  pricePerSecondUSD: number
+  baseFormatted: string
+  groupFormatted: string
+}
+
+export type VideoPricingSummary = Omit<
+  ParsedVideoPricingExpression,
+  'prices'
+> & {
+  prices: VideoPriceEntry[]
 }
 
 const PRIMARY_DYNAMIC_FIELDS = new Set(['inputPrice', 'outputPrice'])
@@ -95,6 +115,27 @@ export function formatDynamicUnitPrice(
     TOKEN_UNIT_DIVISORS[options.tokenUnit]
   const displayPrice = applyRechargeRate(
     priceUSD,
+    options.showRechargePrice ?? false,
+    priceRate,
+    usdExchangeRate
+  )
+
+  return formatBillingCurrencyFromUSD(displayPrice, {
+    digitsLarge: 4,
+    digitsSmall: 6,
+    abbreviate: false,
+  })
+}
+
+export function formatVideoPricePerSecond(
+  pricePerSecondUSD: number,
+  options: DynamicPriceOptions,
+  groupRatioMultiplier = options.groupRatioMultiplier ?? 1
+): string {
+  const priceRate = options.priceRate ?? 1
+  const usdExchangeRate = options.usdExchangeRate ?? 1
+  const displayPrice = applyRechargeRate(
+    pricePerSecondUSD * groupRatioMultiplier,
     options.showRechargePrice ?? false,
     priceRate,
     usdExchangeRate
@@ -163,13 +204,31 @@ export function getDynamicPricingSummary(
   const tier = tiers[0] || null
   const entries = getDynamicPriceEntries(tier, options)
   const rawExpression = model.billing_expr || ''
+  const parsedVideoPricing = parseVideoPricingExpression(rawExpression)
+  const videoPricing = parsedVideoPricing
+    ? {
+        ...parsedVideoPricing,
+        prices: parsedVideoPricing.prices.map((price) => ({
+          ...price,
+          baseFormatted: formatVideoPricePerSecond(price.pricePerSecondUSD, {
+            ...options,
+            groupRatioMultiplier: 1,
+          }),
+          groupFormatted: formatVideoPricePerSecond(
+            price.pricePerSecondUSD,
+            options
+          ),
+        })),
+      }
+    : null
 
   return {
     tiers,
     tier,
     tierCount: tiers.length,
     hasRequestRules: hasDynamicRequestRules(model),
-    isSpecialExpression: rawExpression.trim().length > 0 && tiers.length === 0,
+    isSpecialExpression:
+      rawExpression.trim().length > 0 && tiers.length === 0 && !videoPricing,
     rawExpression,
     entries,
     primaryEntries: entries.filter((entry) =>
@@ -178,5 +237,6 @@ export function getDynamicPricingSummary(
     secondaryEntries: entries.filter(
       (entry) => !PRIMARY_DYNAMIC_FIELDS.has(entry.field)
     ),
+    videoPricing,
   }
 }

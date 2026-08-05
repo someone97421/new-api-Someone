@@ -64,10 +64,15 @@ import {
   getDynamicPriceEntries,
   getDynamicPricingSummary,
   getDynamicPricingTiers,
+  formatVideoPricePerSecond,
   isDynamicPricingModel,
 } from '../lib/dynamic-price'
 import { parseTags } from '../lib/filters'
-import { getAvailableGroups, isTokenBasedModel } from '../lib/model-helpers'
+import {
+  getAvailableGroups,
+  getConfiguredGroupRatio,
+  isTokenBasedModel,
+} from '../lib/model-helpers'
 import { formatFixedPrice, formatGroupPrice } from '../lib/price'
 import type {
   ModelCapability,
@@ -625,6 +630,32 @@ function PriceSection(props: {
   ]
 
   if (dynamicSummary) {
+    if (dynamicSummary.videoPricing) {
+      return (
+        <section>
+          <SectionTitle>{t('Base Price')}</SectionTitle>
+          <div className='overflow-hidden rounded-lg border'>
+            {dynamicSummary.videoPricing.prices.map((price) => (
+              <div
+                key={price.optionValue}
+                className='border-border/60 flex items-baseline justify-between gap-4 border-b px-3 py-2.5 last:border-0'
+              >
+                <span className='text-muted-foreground text-sm font-medium'>
+                  {price.optionValue}
+                </span>
+                <span className='text-foreground font-mono text-sm font-semibold tabular-nums'>
+                  {price.baseFormatted}
+                  <span className='text-muted-foreground/50 ml-1 text-xs font-normal'>
+                    /s
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )
+    }
+
     if (dynamicSummary.isSpecialExpression) {
       return (
         <section>
@@ -911,6 +942,63 @@ function GroupPricingSection(props: {
     'text-muted-foreground py-2 text-[10px] font-medium tracking-wider uppercase'
 
   if (isDynamicPricingModel(props.model)) {
+    const dynamicSummary = getDynamicPricingSummary(props.model, {
+      tokenUnit: props.tokenUnit,
+      showRechargePrice,
+      priceRate: props.priceRate,
+      usdExchangeRate: props.usdExchangeRate,
+      groupRatioMultiplier: 1,
+    })
+    if (dynamicSummary?.videoPricing) {
+      const videoPricing = dynamicSummary.videoPricing
+      return (
+        <section>
+          <SectionTitle>{t('Pricing by Group')}</SectionTitle>
+          <AutoGroupChain model={props.model} autoGroups={props.autoGroups} />
+          <div className='space-y-3'>
+            {availableGroups.map((group) => {
+              const ratio = getConfiguredGroupRatio(props.groupRatio, group)
+              return (
+                <div key={group} className='overflow-hidden rounded-lg border'>
+                  <div className='bg-muted/20 flex items-center justify-between gap-3 border-b px-3 py-2'>
+                    <GroupBadge group={group} size='sm' />
+                    <span className='text-muted-foreground font-mono text-xs'>
+                      {ratio}x
+                    </span>
+                  </div>
+                  {videoPricing.prices.map((price) => (
+                    <div
+                      key={`${group}-${price.optionValue}`}
+                      className='border-border/60 flex items-baseline justify-between gap-4 border-b px-3 py-2.5 last:border-0'
+                    >
+                      <span className='text-muted-foreground text-sm'>
+                        {price.optionValue}
+                      </span>
+                      <span className='font-mono text-sm tabular-nums'>
+                        {formatVideoPricePerSecond(
+                          price.pricePerSecondUSD,
+                          {
+                            tokenUnit: props.tokenUnit,
+                            showRechargePrice,
+                            priceRate: props.priceRate,
+                            usdExchangeRate: props.usdExchangeRate,
+                          },
+                          ratio
+                        )}
+                        <span className='text-muted-foreground/50 ml-1 text-xs font-normal'>
+                          /s
+                        </span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )
+            })}
+          </div>
+        </section>
+      )
+    }
+
     const dynamicTiers = getDynamicPricingTiers(props.model)
 
     if (dynamicTiers.length === 0) {
@@ -949,7 +1037,7 @@ function GroupPricingSection(props: {
     })
     const formattedPricesByGroup = new Map(
       availableGroups.map((group) => {
-        const ratio = props.groupRatio[group] || 1
+        const ratio = getConfiguredGroupRatio(props.groupRatio, group)
         return [
           group,
           getDynamicFormattedPricesByTier(dynamicTiers, {
@@ -969,7 +1057,7 @@ function GroupPricingSection(props: {
         <AutoGroupChain model={props.model} autoGroups={props.autoGroups} />
         <div className='space-y-3'>
           {availableGroups.map((group) => {
-            const ratio = props.groupRatio[group] || 1
+            const ratio = getConfiguredGroupRatio(props.groupRatio, group)
             const formattedPricesByTier =
               formattedPricesByGroup.get(group) ??
               new Map<DynamicPricingTier, Map<string, string>>()
@@ -1065,7 +1153,8 @@ function GroupPricingSection(props: {
             header: t('Ratio'),
             className: thClass,
             cellClassName: 'text-muted-foreground py-2.5 font-mono',
-            cell: (group) => `${props.groupRatio[group] || 1}x`,
+            cell: (group) =>
+              `${getConfiguredGroupRatio(props.groupRatio, group)}x`,
           },
           ...(isTokenBased
             ? [

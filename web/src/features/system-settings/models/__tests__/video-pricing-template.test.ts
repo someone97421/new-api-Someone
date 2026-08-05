@@ -19,7 +19,10 @@ For commercial licensing, please contact support@quantumnous.com
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
-import { buildVideoPricingExpression } from '@/features/pricing/lib/video-pricing-expr'
+import {
+  buildVideoPricingExpression,
+  parseVideoPricingExpression,
+} from '@/features/pricing/lib/video-pricing-expr'
 
 describe('video pricing template', () => {
   test('builds request-aware pricing from custom field paths and options', () => {
@@ -69,6 +72,52 @@ describe('video pricing template', () => {
         '3601',
         items.slice(0, 1),
         'a'
+      ),
+      null
+    )
+  })
+
+  test('parses every configured option into USD per-second prices', () => {
+    const expression = buildVideoPricingExpression(
+      'video.seconds',
+      'video.quality',
+      '6.78',
+      '5',
+      '120',
+      [
+        { id: 'low', value: 'sd', pricePerSecond: '0.52' },
+        { id: 'high', value: 'hd', pricePerSecond: '0.67' },
+      ],
+      'high'
+    )
+
+    assert.ok(expression)
+    const parsed = parseVideoPricingExpression(expression)
+
+    assert.deepEqual(parsed, {
+      durationPath: 'video.seconds',
+      optionPath: 'video.quality',
+      defaultDuration: 5,
+      maxDuration: 120,
+      prices: [
+        {
+          optionValue: 'sd',
+          tierLabel: 'sd',
+          pricePerSecondUSD: 0.52 / 6.78,
+        },
+        {
+          optionValue: 'hd',
+          tierLabel: 'hd',
+          pricePerSecondUSD: 0.67 / 6.78,
+        },
+      ],
+    })
+  })
+
+  test('does not classify arbitrary request expressions as video pricing', () => {
+    assert.equal(
+      parseVideoPricingExpression(
+        'param("quality") == "hd" ? tier("hd", p * 2) : tier("sd", p)'
       ),
       null
     )

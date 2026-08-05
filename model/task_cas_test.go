@@ -134,6 +134,13 @@ func TestSnapshotEqual_DifferentData(t *testing.T) {
 	assert.False(t, a.Equal(b))
 }
 
+func TestSnapshotEqual_DifferentSanitizedResponseBody(t *testing.T) {
+	a := taskSnapshot{Properties: Properties{ResponseBody: `{"status":"running"}`}}
+	b := taskSnapshot{Properties: Properties{ResponseBody: `{"status":"success"}`}}
+
+	assert.False(t, a.Equal(b))
+}
+
 func TestSnapshotEqual_NilVsEmpty(t *testing.T) {
 	a := taskSnapshot{Status: TaskStatusInProgress, Data: nil}
 	b := taskSnapshot{Status: TaskStatusInProgress, Data: json.RawMessage{}}

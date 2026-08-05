@@ -43,6 +43,7 @@ import {
   type RequestRuleGroup,
   type TierCondition,
 } from '../lib/billing-expr'
+import { parseVideoPricingExpression } from '../lib/video-pricing-expr'
 
 type DynamicPricingBreakdownProps = {
   billingExpr: string | null | undefined
@@ -176,13 +177,14 @@ export function DynamicPricingBreakdown({
     return { symbol: '$', rate: 1 }
   }, [currency])
 
-  const { tiers, ruleGroups } = useMemo(() => {
+  const { tiers, ruleGroups, videoPricing } = useMemo(() => {
     const split = splitBillingExprAndRequestRules(expr)
     const parsedTiers = parseTiersFromExpr(split.billingExpr)
     const parsedRules = tryParseRequestRuleExpr(split.requestRuleExpr || '')
     return {
       tiers: parsedTiers,
       ruleGroups: parsedRules || [],
+      videoPricing: parseVideoPricingExpression(split.billingExpr),
     }
   }, [expr])
 
@@ -193,6 +195,71 @@ export function DynamicPricingBreakdown({
   )
 
   if (!expr) return null
+
+  if (videoPricing) {
+    return (
+      <section className={cn('min-w-0', !compact && 'py-3 sm:py-4')}>
+        {!compact && (
+          <div className='mb-3 flex items-start gap-2 sm:mb-4'>
+            <span className='mt-0.5 inline-flex size-6 items-center justify-center rounded-lg bg-amber-100 text-amber-700 shadow-sm dark:bg-amber-500/20 dark:text-amber-300'>
+              <TagIcon className='size-3.5' />
+            </span>
+            <div>
+              <div className='text-foreground text-base font-medium'>
+                {t('Dynamic Pricing')}
+              </div>
+              <div className='text-muted-foreground text-xs'>
+                {t('Price per second')}
+              </div>
+            </div>
+          </div>
+        )}
+        <div className='overflow-hidden rounded-lg border'>
+          <div className='bg-muted/20 text-muted-foreground grid grid-cols-[minmax(0,1fr)_auto] gap-4 border-b px-3 py-2 text-[10px] font-medium tracking-wider uppercase'>
+            <span>{t('Option value')}</span>
+            <span>{t('Price per second')}</span>
+          </div>
+          {videoPricing.prices.map((price) => {
+            const isMatched =
+              normalizeTierLabel(price.tierLabel) === normalizedMatchedTierLabel
+            return (
+              <div
+                key={price.optionValue}
+                className={cn(
+                  'border-border/60 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 border-b px-3 py-2.5 last:border-0',
+                  isMatched && 'bg-emerald-50/70 dark:bg-emerald-500/10'
+                )}
+              >
+                <div className='flex min-w-0 items-center gap-2'>
+                  <span className='truncate text-sm font-medium'>
+                    {price.optionValue}
+                  </span>
+                  {isMatched && (
+                    <Badge
+                      variant='secondary'
+                      className='bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'
+                    >
+                      {t('Matched')}
+                    </Badge>
+                  )}
+                </div>
+                <span className='font-mono text-sm font-semibold tabular-nums'>
+                  {symbol}
+                  {(price.pricePerSecondUSD * rate).toFixed(4)}/s
+                </span>
+              </div>
+            )
+          })}
+        </div>
+        {!compact && (
+          <div className='text-muted-foreground mt-2 text-xs'>
+            {t('Duration field path')}: {videoPricing.durationPath} ·{' '}
+            {t('Pricing option field path')}: {videoPricing.optionPath}
+          </div>
+        )}
+      </section>
+    )
+  }
 
   if (!hasTiers) {
     return (
@@ -260,7 +327,7 @@ export function DynamicPricingBreakdown({
             {t('Tiered price table')}
           </div>
           <div className='space-y-1.5 sm:hidden'>
-            {tiers.map((tier, i) => {
+            {tiers.map((tier) => {
               const condSummary = formatConditionSummary(tier.conditions, t)
               const isMatched =
                 matchedTierLabel != null &&
@@ -268,7 +335,7 @@ export function DynamicPricingBreakdown({
                 tier.label === matchedTierLabel
               return (
                 <div
-                  key={`tier-mobile-${i}`}
+                  key={`tier-mobile-${tier.label}-${condSummary}`}
                   className={cn(
                     'rounded-md border p-2',
                     isMatched && 'border-emerald-500/40 bg-emerald-500/10'
@@ -425,9 +492,9 @@ export function DynamicPricingBreakdown({
             {t('Conditional multipliers')}
           </div>
           <ul className='space-y-1.5'>
-            {ruleGroups.map((group, gi) => (
+            {ruleGroups.map((group) => (
               <li
-                key={`group-${gi}`}
+                key={`group-${describeGroup(group, t)}-${group.multiplier}`}
                 className='bg-muted/50 flex items-center justify-between gap-3 rounded-md px-3 py-2'
               >
                 <span

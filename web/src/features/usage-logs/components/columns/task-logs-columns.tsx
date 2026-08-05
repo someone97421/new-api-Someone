@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { ColumnDef } from '@tanstack/react-table'
-import { Music } from 'lucide-react'
+import { FileJson2, Music } from 'lucide-react'
 /* eslint-disable react-refresh/only-export-components */
 import { useState, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -36,6 +36,7 @@ import {
   type AudioClip,
 } from '../dialogs/audio-preview-dialog'
 import { FailReasonDialog } from '../dialogs/fail-reason-dialog'
+import { TaskDetailsDialog } from '../dialogs/task-details-dialog'
 import { useUsageLogsContext } from '../usage-logs-provider'
 import {
   createDurationColumn,
@@ -221,6 +222,9 @@ export function useTaskLogsColumns(isAdmin: boolean): ColumnDef<TaskLog>[] {
         const failReason = row.getValue('fail_reason') as string
         const status = log.status
         const [dialogOpen, setDialogOpen] = useState(false)
+        const [detailsOpen, setDetailsOpen] = useState(false)
+
+        let resultContent: React.ReactNode = null
 
         const isSunoSuccess =
           log.platform === 'suno' && status === TASK_STATUS.SUCCESS
@@ -234,7 +238,7 @@ export function useTaskLogsColumns(isAdmin: boolean): ColumnDef<TaskLog>[] {
                 (c as Record<string, unknown>).audio_url
             )
           ) {
-            return <AudioPreviewCell log={log} />
+            resultContent = <AudioPreviewCell log={log} />
           }
         }
 
@@ -249,7 +253,7 @@ export function useTaskLogsColumns(isAdmin: boolean): ColumnDef<TaskLog>[] {
 
         if (isSuccess && isVideoTask && isUrl) {
           const videoUrl = `/v1/videos/${log.task_id}/content`
-          return (
+          resultContent = (
             <a
               href={videoUrl}
               target='_blank'
@@ -261,26 +265,46 @@ export function useTaskLogsColumns(isAdmin: boolean): ColumnDef<TaskLog>[] {
           )
         }
 
-        if (!failReason) {
-          return <span className='text-muted-foreground/60 text-xs'>-</span>
+        if (!resultContent && failReason) {
+          resultContent = (
+            <>
+              <button
+                type='button'
+                className='group flex max-w-[200px] items-center gap-1 text-left text-xs'
+                onClick={() => setDialogOpen(true)}
+                title={t('Click to view full error message')}
+              >
+                <span className='truncate leading-snug text-red-600 group-hover:underline dark:text-red-400'>
+                  {failReason}
+                </span>
+              </button>
+              <FailReasonDialog
+                failReason={failReason}
+                open={dialogOpen}
+                onOpenChange={setDialogOpen}
+              />
+            </>
+          )
         }
 
         return (
           <>
-            <button
-              type='button'
-              className='group flex max-w-[200px] items-center gap-1 text-left text-xs'
-              onClick={() => setDialogOpen(true)}
-              title={t('Click to view full error message')}
-            >
-              <span className='truncate leading-snug text-red-600 group-hover:underline dark:text-red-400'>
-                {failReason}
-              </span>
-            </button>
-            <FailReasonDialog
-              failReason={failReason}
-              open={dialogOpen}
-              onOpenChange={setDialogOpen}
+            <div className='flex flex-col items-start gap-1.5'>
+              <button
+                type='button'
+                className='text-muted-foreground hover:text-foreground flex items-center gap-1 text-xs hover:underline'
+                onClick={() => setDetailsOpen(true)}
+                title={t('View details')}
+              >
+                <FileJson2 className='size-3.5' />
+                {t('View details')}
+              </button>
+              {resultContent}
+            </div>
+            <TaskDetailsDialog
+              log={log}
+              open={detailsOpen}
+              onOpenChange={setDetailsOpen}
             />
           </>
         )

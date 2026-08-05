@@ -82,6 +82,8 @@ type Properties struct {
 	Input             string `json:"input"`
 	UpstreamModelName string `json:"upstream_model_name,omitempty"`
 	OriginModelName   string `json:"origin_model_name,omitempty"`
+	RequestBody       string `json:"request_body,omitempty"`
+	ResponseBody      string `json:"response_body,omitempty"`
 }
 
 func (m *Properties) Scan(val interface{}) error {
@@ -94,7 +96,8 @@ func (m *Properties) Scan(val interface{}) error {
 }
 
 func (m Properties) Value() (driver.Value, error) {
-	if m == (Properties{}) {
+	if m.Input == "" && m.UpstreamModelName == "" && m.OriginModelName == "" &&
+		m.RequestBody == "" && m.ResponseBody == "" {
 		return nil, nil
 	}
 	return common.Marshal(m)
@@ -377,6 +380,7 @@ type taskSnapshot struct {
 	FailReason string
 	ResultURL  string
 	Data       json.RawMessage
+	Properties Properties
 }
 
 func (s taskSnapshot) Equal(other taskSnapshot) bool {
@@ -386,7 +390,8 @@ func (s taskSnapshot) Equal(other taskSnapshot) bool {
 		s.FinishTime == other.FinishTime &&
 		s.FailReason == other.FailReason &&
 		s.ResultURL == other.ResultURL &&
-		bytes.Equal(s.Data, other.Data)
+		bytes.Equal(s.Data, other.Data) &&
+		s.Properties == other.Properties
 }
 
 func (t *Task) Snapshot() taskSnapshot {
@@ -398,6 +403,7 @@ func (t *Task) Snapshot() taskSnapshot {
 		FailReason: t.FailReason,
 		ResultURL:  t.PrivateData.ResultURL,
 		Data:       t.Data,
+		Properties: t.Properties,
 	}
 }
 

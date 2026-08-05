@@ -34,7 +34,10 @@ import {
   getDynamicPricingSummary,
 } from '../lib/dynamic-price'
 import { parseTags } from '../lib/filters'
-import { isTokenBasedModel } from '../lib/model-helpers'
+import {
+  getDisplayGroupPricingContext,
+  isTokenBasedModel,
+} from '../lib/model-helpers'
 import {
   formatPrice,
   formatRequestPrice,
@@ -114,18 +117,50 @@ export function usePricingColumns(
       ),
       cell: ({ row }) => {
         const model = row.original
+        const displayGroup = getDisplayGroupPricingContext(model, selectedGroup)
         const dynamicSummary = getDynamicPricingSummary(model, {
           tokenUnit,
           showRechargePrice,
           priceRate,
           usdExchangeRate,
-          groupRatioMultiplier: getDynamicDisplayGroupRatio(
-            model,
-            selectedGroup
-          ),
+          groupRatioMultiplier: displayGroup.ratio,
         })
 
         if (dynamicSummary) {
+          if (dynamicSummary.videoPricing) {
+            const ratioLabel = stripTrailingZeros(displayGroup.ratio.toFixed(4))
+            return (
+              <div className='max-w-full min-w-0 space-y-1.5 py-0.5'>
+                {dynamicSummary.videoPricing.prices.map((price) => (
+                  <div
+                    key={price.optionValue}
+                    className='border-border/50 border-b pb-1.5 last:border-0 last:pb-0'
+                  >
+                    <div className='flex items-baseline justify-between gap-3 text-xs'>
+                      <span className='text-foreground font-medium'>
+                        {price.optionValue}
+                      </span>
+                      <span className='font-mono tabular-nums'>
+                        <span className='text-muted-foreground mr-1 font-sans text-[10px]'>
+                          {t('Standard price')}
+                        </span>
+                        {price.baseFormatted}/s
+                      </span>
+                    </div>
+                    <div className='text-muted-foreground mt-0.5 flex items-baseline justify-between gap-3 text-[10px]'>
+                      <span>
+                        {displayGroup.group || t('Group')} ×{ratioLabel}
+                      </span>
+                      <span className='font-mono tabular-nums'>
+                        {price.groupFormatted}/s
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )
+          }
+
           if (dynamicSummary.isSpecialExpression) {
             return (
               <div className='max-w-full min-w-0'>
@@ -233,7 +268,7 @@ export function usePricingColumns(
           </div>
         )
       },
-      size: 180,
+      size: 260,
       enableSorting: false,
     },
 

@@ -25,12 +25,12 @@ import { getLobeIcon } from '@/lib/lobe-icon'
 import { cn } from '@/lib/utils'
 
 import { DEFAULT_TOKEN_UNIT } from '../constants'
-import {
-  getDynamicDisplayGroupRatio,
-  getDynamicPricingSummary,
-} from '../lib/dynamic-price'
+import { getDynamicPricingSummary } from '../lib/dynamic-price'
 import { parseTags } from '../lib/filters'
-import { isTokenBasedModel } from '../lib/model-helpers'
+import {
+  getDisplayGroupPricingContext,
+  isTokenBasedModel,
+} from '../lib/model-helpers'
 import { formatPrice, formatRequestPrice } from '../lib/price'
 import type { PricingModel, TokenUnit } from '../types'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
@@ -66,18 +66,20 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
     props.model.billing_mode === 'tiered_expr' &&
     Boolean(props.model.billing_expr)
   const hasCachedPrice = isTokenBased && props.model.cache_ratio != null
+  const displayGroup = getDisplayGroupPricingContext(
+    props.model,
+    props.selectedGroup
+  )
   const dynamicSummary = isDynamicPricing
     ? getDynamicPricingSummary(props.model, {
         tokenUnit,
         showRechargePrice,
         priceRate,
         usdExchangeRate,
-        groupRatioMultiplier: getDynamicDisplayGroupRatio(
-          props.model,
-          props.selectedGroup
-        ),
+        groupRatioMultiplier: displayGroup.ratio,
       })
     : null
+  const pricingUnitLabel = dynamicSummary?.videoPricing ? '/s' : tokenUnitLabel
 
   const primaryGroup = groups[0]
   const bottomTags = [...endpoints.slice(0, 2), ...tags.slice(0, 2)]
@@ -93,7 +95,19 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
 
   let priceSummary: ReactNode
   if (dynamicSummary) {
-    if (dynamicSummary.isSpecialExpression) {
+    if (dynamicSummary.videoPricing) {
+      priceSummary = dynamicSummary.videoPricing.prices.map((price) => (
+        <span
+          key={price.optionValue}
+          className='text-muted-foreground whitespace-nowrap'
+        >
+          {price.optionValue}{' '}
+          <span className='text-foreground font-mono font-semibold'>
+            {price.groupFormatted}/s
+          </span>
+        </span>
+      ))
+    } else if (dynamicSummary.isSpecialExpression) {
       priceSummary = (
         <span className='min-w-0'>
           <span className='text-amber-700 dark:text-amber-300'>
@@ -264,7 +278,7 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
             </span>
           ))}
           <span className='text-muted-foreground/50 text-xs'>
-            {tokenUnitLabel}
+            {pricingUnitLabel}
           </span>
           {hiddenCount > 0 && (
             <span className='text-muted-foreground/40 text-xs'>

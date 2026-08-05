@@ -61,6 +61,18 @@ export function getDisplayGroupRatio(
   model: PricingModel,
   selectedGroup?: string
 ): number {
+  return getDisplayGroupPricingContext(model, selectedGroup).ratio
+}
+
+export type DisplayGroupPricingContext = {
+  group: string | null
+  ratio: number
+}
+
+export function getDisplayGroupPricingContext(
+  model: PricingModel,
+  selectedGroup?: string
+): DisplayGroupPricingContext {
   const modelEnableGroups = Array.isArray(model.enable_groups)
     ? model.enable_groups
     : []
@@ -71,14 +83,18 @@ export function getDisplayGroupRatio(
     selectedGroup !== FILTER_ALL &&
     modelEnableGroups.includes(selectedGroup)
   ) {
-    return getConfiguredGroupRatio(groupRatio, selectedGroup)
+    return {
+      group: selectedGroup,
+      ratio: getConfiguredGroupRatio(groupRatio, selectedGroup),
+    }
   }
 
   if (modelEnableGroups.length === 0) {
-    return 1
+    return { group: null, ratio: 1 }
   }
 
   let minRatio = Number.POSITIVE_INFINITY
+  let minRatioGroup: string | null = null
 
   for (const group of modelEnableGroups) {
     const ratio = groupRatio[group]
@@ -88,10 +104,13 @@ export function getDisplayGroupRatio(
       ratio < minRatio
     ) {
       minRatio = ratio
+      minRatioGroup = group
     }
   }
 
-  return minRatio === Number.POSITIVE_INFINITY ? 1 : minRatio
+  return minRatio === Number.POSITIVE_INFINITY
+    ? { group: modelEnableGroups[0] || null, ratio: 1 }
+    : { group: minRatioGroup, ratio: minRatio }
 }
 
 /**

@@ -507,6 +507,8 @@ func RelayTask(c *gin.Context) {
 
 	var result *relay.TaskSubmitResult
 	var taskErr *taskdto.TaskError
+	var taskRequestBody string
+	requestBodyCaptured := false
 	defer func() {
 		if taskErr != nil && relayInfo.Billing != nil {
 			relayInfo.Billing.Refund(c)
@@ -553,6 +555,15 @@ func RelayTask(c *gin.Context) {
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
+		if !requestBodyCaptured {
+			if bodyBytes, readErr := bodyStorage.Bytes(); readErr == nil {
+				taskRequestBody = service.SanitizeTaskLogBody(
+					bodyBytes,
+					c.Request.Header.Get("Content-Type"),
+				)
+			}
+			requestBodyCaptured = true
+		}
 
 		result, taskErr = relay.RelayTaskSubmit(c, relayInfo)
 		if taskErr == nil {
@@ -601,6 +612,8 @@ func RelayTask(c *gin.Context) {
 		task.Quota = result.Quota
 		task.Data = result.TaskData
 		task.Action = relayInfo.Action
+		task.Properties.RequestBody = taskRequestBody
+		task.Properties.ResponseBody = service.SanitizeTaskLogBody(result.TaskData, "application/json")
 		if insertErr := task.Insert(); insertErr != nil {
 			common.SysError("insert task error: " + insertErr.Error())
 		}

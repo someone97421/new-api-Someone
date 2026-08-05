@@ -476,6 +476,7 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	logger.LogDebug(ctx, "updateVideoSingleTask response: %s", responseBody)
 
 	snap := task.Snapshot()
+	task.Properties.ResponseBody = SanitizeTaskLogBody(responseBody, resp.Header.Get("Content-Type"))
 
 	taskResult := &relaycommon.TaskInfo{}
 	// try parse as New API response format
