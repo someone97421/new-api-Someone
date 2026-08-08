@@ -24,6 +24,7 @@ import (
 
 const asyncMediaInternalJobHeader = "X-New-API-Async-Job-ID"
 const asyncMediaInternalSignatureHeader = "X-New-API-Async-Worker-Signature"
+const AsyncMediaInternalChannelHeader = "X-New-API-Upstream-Channel-ID"
 
 type asyncMediaResponseWriter struct {
 	header http.Header
@@ -217,12 +218,13 @@ func processAsyncMediaRelayRequest(handler http.Handler, workerID string, job *m
 		_ = DeleteAsyncMediaPath(responsePath)
 		_ = DeleteAsyncMediaPath(job.RequestFile)
 		err = model.UpdateAsyncMediaJob(job.JobID, workerID, map[string]any{
-			"status":           model.AsyncMediaJobStatusWaitingUpstream,
-			"billing_status":   model.AsyncMediaBillingDelegated,
-			"origin_task_id":   originTask.TaskID,
-			"http_status":      writer.status,
-			"response_headers": string(responseHeaders),
-			"next_run_at":      time.Now().Unix() + 3,
+			"status":              model.AsyncMediaJobStatusWaitingUpstream,
+			"billing_status":      model.AsyncMediaBillingDelegated,
+			"origin_task_id":      originTask.TaskID,
+			"upstream_channel_id": originTask.ChannelId,
+			"http_status":         writer.status,
+			"response_headers":    string(responseHeaders),
+			"next_run_at":         time.Now().Unix() + 3,
 		})
 		if err != nil {
 			logger.LogError(context.Background(), fmt.Sprintf("异步媒体任务等待上游状态写入失败 job=%s: %v", job.JobID, err))
@@ -235,16 +237,24 @@ func processAsyncMediaRelayRequest(handler http.Handler, workerID string, job *m
 		upstreamTaskID := extractAsyncMediaTaskID(responsePath)
 		modelName := extractAsyncMediaRequestModel(job)
 		if upstreamTaskID != "" && modelName != "" {
+			upstreamChannelID, parseErr := strconv.Atoi(strings.TrimSpace(writer.header.Get(AsyncMediaInternalChannelHeader)))
+			if parseErr != nil || upstreamChannelID <= 0 {
+				_ = DeleteAsyncMediaPath(responsePath)
+				_ = DeleteAsyncMediaPath(job.RequestFile)
+				failAsyncMediaJob(workerID, job, http.StatusInternalServerError, "异步图片任务缺少原始上游渠道信息", model.AsyncMediaBillingReconciliationPending)
+				return
+			}
 			_ = DeleteAsyncMediaPath(responsePath)
 			_ = DeleteAsyncMediaPath(job.RequestFile)
 			if updateErr := model.UpdateAsyncMediaJob(job.JobID, workerID, map[string]any{
-				"status":           model.AsyncMediaJobStatusWaitingUpstream,
-				"billing_status":   model.AsyncMediaBillingSettled,
-				"upstream_task_id": upstreamTaskID,
-				"model_name":       modelName,
-				"http_status":      writer.status,
-				"response_headers": string(responseHeaders),
-				"next_run_at":      time.Now().Unix() + 3,
+				"status":              model.AsyncMediaJobStatusWaitingUpstream,
+				"billing_status":      model.AsyncMediaBillingSettled,
+				"upstream_channel_id": upstreamChannelID,
+				"upstream_task_id":    upstreamTaskID,
+				"model_name":          modelName,
+				"http_status":         writer.status,
+				"response_headers":    string(responseHeaders),
+				"next_run_at":         time.Now().Unix() + 3,
 			}); updateErr != nil {
 				logger.LogError(context.Background(), fmt.Sprintf("异步图片任务轮询状态写入失败 job=%s: %v", job.JobID, updateErr))
 			}
@@ -289,6 +299,10 @@ func processAsyncMediaRelayRequest(handler http.Handler, workerID string, job *m
 }
 
 func processAsyncImageUpstreamTask(handler http.Handler, workerID string, job *model.AsyncMediaJob) {
+	if job.UpstreamChannelID <= 0 {
+		failAsyncMediaJob(workerID, job, http.StatusInternalServerError, "异步图片任务缺少原始上游渠道信息", model.AsyncMediaBillingReconciliationPending)
+		return
+	}
 	token, err := model.GetTokenById(job.TokenID)
 	if err != nil || token == nil || token.UserId != job.UserID {
 		failAsyncMediaJob(workerID, job, http.StatusUnauthorized, "用于查询任务的令牌已不可用", model.AsyncMediaBillingReconciliationPending)
@@ -303,6 +317,7 @@ func processAsyncImageUpstreamTask(handler http.Handler, workerID string, job *m
 	request.Header.Set("Authorization", "Bearer sk-"+token.Key)
 	request.Header.Set(asyncMediaInternalJobHeader, job.JobID)
 	request.Header.Set(asyncMediaInternalSignatureHeader, AsyncMediaInternalSignature(job.JobID))
+	request.Header.Set(AsyncMediaInternalChannelHeader, strconv.Itoa(job.UpstreamChannelID))
 	responsePath, responseFile, err := CreateAsyncMediaResponseFile(job.JobID)
 	if err != nil {
 		failAsyncMediaJob(workerID, job, http.StatusInternalServerError, err.Error(), model.AsyncMediaBillingReconciliationPending)

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -230,6 +231,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		if newAPIError == nil {
 			relayInfo.LastError = nil
+			asyncJobID := c.GetHeader("X-New-API-Async-Job-ID")
+			if service.ValidateAsyncMediaInternalRequest(asyncJobID, c.GetHeader("X-New-API-Async-Worker-Signature")) {
+				c.Header(service.AsyncMediaInternalChannelHeader, strconv.Itoa(channel.Id))
+			}
 			return
 		}
 

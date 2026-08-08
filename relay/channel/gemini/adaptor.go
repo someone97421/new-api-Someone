@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/constant"
@@ -61,10 +62,6 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 }
 
 func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.ImageRequest) (any, error) {
-	if !strings.HasPrefix(info.UpstreamModelName, "imagen") {
-		return nil, errors.New("not supported model for image generation, only imagen models are supported")
-	}
-
 	// convert size to aspect ratio but allow user to specify aspect ratio
 	aspectRatio := "1:1" // default aspect ratio
 	size := strings.TrimSpace(request.Size)
@@ -86,6 +83,51 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 			}
 		}
 	}
+	imageSize := ""
+	if request.Quality != "" {
+		imageSize = "1K"
+		switch request.Quality {
+		case "hd", "high", "2K":
+			imageSize = "2K"
+		case "standard", "medium", "low", "auto", "1K":
+			imageSize = "1K"
+		}
+	}
+
+	imageN := lo.FromPtrOr(request.N, uint(1))
+	if imageN == 0 {
+		imageN = 1
+	}
+
+	if model_setting.IsGeminiModelSupportImagine(info.UpstreamModelName) {
+		if imageN != 1 {
+			return nil, errors.New("Gemini native image generation supports exactly one image per request")
+		}
+		imageConfig := map[string]any{"aspectRatio": aspectRatio}
+		if imageSize != "" {
+			imageConfig["imageSize"] = imageSize
+		}
+		imageConfigJSON, err := common.Marshal(imageConfig)
+		if err != nil {
+			return nil, fmt.Errorf("marshal Gemini image config: %w", err)
+		}
+		return &dto.GeminiChatRequest{
+			Contents: []dto.GeminiChatContent{
+				{
+					Role:  "user",
+					Parts: []dto.GeminiPart{{Text: request.Prompt}},
+				},
+			},
+			GenerationConfig: dto.GeminiChatGenerationConfig{
+				ResponseModalities: []string{"TEXT", "IMAGE"},
+				ImageConfig:        imageConfigJSON,
+			},
+		}, nil
+	}
+
+	if !strings.HasPrefix(info.UpstreamModelName, "imagen") {
+		return nil, errors.New("not supported model for Gemini image generation")
+	}
 
 	// build gemini imagen request
 	geminiRequest := dto.GeminiImageRequest{
@@ -95,32 +137,11 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 			},
 		},
 		Parameters: dto.GeminiImageParameters{
-			SampleCount:      int(lo.FromPtrOr(request.N, uint(1))),
+			SampleCount:      int(imageN),
 			AspectRatio:      aspectRatio,
 			PersonGeneration: "allow_adult", // default allow adult
+			ImageSize:        imageSize,
 		},
-	}
-
-	// Set imageSize when quality parameter is specified
-	// Map quality parameter to imageSize (only supported by Standard and Ultra models)
-	// quality values: auto, high, medium, low (for gpt-image-1), hd, standard (for dall-e-3)
-	// imageSize values: 1K (default), 2K
-	// https://ai.google.dev/gemini-api/docs/imagen
-	// https://platform.openai.com/docs/api-reference/images/create
-	if request.Quality != "" {
-		imageSize := "1K" // default
-		switch request.Quality {
-		case "hd", "high":
-			imageSize = "2K"
-		case "2K":
-			imageSize = "2K"
-		case "standard", "medium", "low", "auto", "1K":
-			imageSize = "1K"
-		default:
-			// unknown quality value, default to 1K
-			imageSize = "1K"
-		}
-		geminiRequest.Parameters.ImageSize = imageSize
 	}
 
 	return geminiRequest, nil
@@ -276,6 +297,9 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 
 	if strings.HasPrefix(info.UpstreamModelName, "imagen") {
 		return GeminiImageHandler(c, info, resp)
+	}
+	if info.RelayMode == constant.RelayModeImagesGenerations && model_setting.IsGeminiModelSupportImagine(info.UpstreamModelName) {
+		return GeminiNativeImageHandler(c, info, resp)
 	}
 
 	// check if the model is an embedding model

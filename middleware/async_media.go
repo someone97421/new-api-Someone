@@ -3,6 +3,7 @@ package middleware
 import (
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -12,14 +13,25 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const asyncMediaOriginChannelContextKey = "async_media_origin_channel"
+
 func AsyncMediaEnqueue() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if !constant.AsyncMediaEnabled || c.Request.Method != http.MethodPost || !isAsyncMediaRequest(c) {
+		internalJobID := c.GetHeader("X-New-API-Async-Job-ID")
+		if service.ValidateAsyncMediaInternalRequest(internalJobID, c.GetHeader("X-New-API-Async-Worker-Signature")) {
+			if channelID := strings.TrimSpace(c.GetHeader(service.AsyncMediaInternalChannelHeader)); channelID != "" {
+				parsedChannelID, err := strconv.Atoi(channelID)
+				if err != nil || parsedChannelID <= 0 {
+					abortWithOpenAiMessage(c, http.StatusBadRequest, "无效的异步任务上游渠道")
+					return
+				}
+				common.SetContextKey(c, constant.ContextKeyTokenSpecificChannelId, strconv.Itoa(parsedChannelID))
+				c.Set(asyncMediaOriginChannelContextKey, true)
+			}
 			c.Next()
 			return
 		}
-		internalJobID := c.GetHeader("X-New-API-Async-Job-ID")
-		if service.ValidateAsyncMediaInternalRequest(internalJobID, c.GetHeader("X-New-API-Async-Worker-Signature")) {
+		if !constant.AsyncMediaEnabled || c.Request.Method != http.MethodPost || !isAsyncMediaRequest(c) {
 			c.Next()
 			return
 		}

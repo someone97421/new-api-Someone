@@ -50,7 +50,7 @@ func Distribute() func(c *gin.Context) {
 				abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidChannelId))
 				return
 			}
-			if channel.Status != common.ChannelStatusEnabled {
+			if channel.Status != common.ChannelStatusEnabled && !c.GetBool(asyncMediaOriginChannelContextKey) {
 				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
 				return
 			}
@@ -490,6 +490,10 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	// c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
 	common.SetContextKey(c, constant.ContextKeyChannelKey, key)
 	common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, channel.GetBaseURL())
+	internalJobID := c.GetHeader("X-New-API-Async-Job-ID")
+	if service.ValidateAsyncMediaInternalRequest(internalJobID, c.GetHeader("X-New-API-Async-Worker-Signature")) {
+		c.Header(service.AsyncMediaInternalChannelHeader, strconv.Itoa(channel.Id))
+	}
 
 	common.SetContextKey(c, constant.ContextKeySystemPromptOverride, false)
 

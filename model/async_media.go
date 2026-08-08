@@ -27,34 +27,35 @@ const (
 )
 
 type AsyncMediaJob struct {
-	ID              int64               `json:"-" gorm:"primaryKey"`
-	JobID           string              `json:"id" gorm:"type:varchar(64);uniqueIndex"`
-	UserID          int                 `json:"user_id" gorm:"index"`
-	TokenID         int                 `json:"token_id" gorm:"index"`
-	Method          string              `json:"method" gorm:"type:varchar(16)"`
-	RequestPath     string              `json:"request_path" gorm:"type:varchar(512)"`
-	RawQuery        string              `json:"-" gorm:"type:text"`
-	RequestHeaders  string              `json:"-" gorm:"type:text"`
-	RequestFile     string              `json:"-" gorm:"type:text"`
-	RequestSize     int64               `json:"request_size"`
-	Status          AsyncMediaJobStatus `json:"status" gorm:"type:varchar(32);index"`
-	BillingStatus   string              `json:"billing_status" gorm:"type:varchar(32);index"`
-	OriginTaskID    string              `json:"origin_task_id,omitempty" gorm:"type:varchar(191);index"`
-	UpstreamTaskID  string              `json:"upstream_task_id,omitempty" gorm:"type:varchar(191);index"`
-	ModelName       string              `json:"model,omitempty" gorm:"type:varchar(191);index"`
-	HTTPStatus      int                 `json:"http_status,omitempty"`
-	ResponseHeaders string              `json:"-" gorm:"type:text"`
-	ResponseFile    string              `json:"-" gorm:"type:text"`
-	Error           string              `json:"error,omitempty" gorm:"type:text"`
-	LeaseOwner      string              `json:"-" gorm:"type:varchar(128);index"`
-	LeaseUntil      int64               `json:"-" gorm:"bigint;index"`
-	NextRunAt       int64               `json:"-" gorm:"bigint;index"`
-	CreatedAt       int64               `json:"created_at" gorm:"bigint;index"`
-	StartedAt       int64               `json:"started_at,omitempty" gorm:"bigint"`
-	CompletedAt     int64               `json:"completed_at,omitempty" gorm:"bigint;index"`
-	ExpiresAt       int64               `json:"expires_at,omitempty" gorm:"bigint;index"`
-	UpdatedAt       int64               `json:"updated_at" gorm:"bigint;index"`
-	Files           []AsyncMediaFile    `json:"data,omitempty" gorm:"foreignKey:JobID;references:JobID"`
+	ID                int64               `json:"-" gorm:"primaryKey"`
+	JobID             string              `json:"id" gorm:"type:varchar(64);uniqueIndex"`
+	UserID            int                 `json:"user_id" gorm:"index"`
+	TokenID           int                 `json:"token_id" gorm:"index"`
+	Method            string              `json:"method" gorm:"type:varchar(16)"`
+	RequestPath       string              `json:"request_path" gorm:"type:varchar(512)"`
+	RawQuery          string              `json:"-" gorm:"type:text"`
+	RequestHeaders    string              `json:"-" gorm:"type:text"`
+	RequestFile       string              `json:"-" gorm:"type:text"`
+	RequestSize       int64               `json:"request_size"`
+	Status            AsyncMediaJobStatus `json:"status" gorm:"type:varchar(32);index"`
+	BillingStatus     string              `json:"billing_status" gorm:"type:varchar(32);index"`
+	OriginTaskID      string              `json:"origin_task_id,omitempty" gorm:"type:varchar(191);index"`
+	UpstreamChannelID int                 `json:"-" gorm:"index"`
+	UpstreamTaskID    string              `json:"upstream_task_id,omitempty" gorm:"type:varchar(191);index"`
+	ModelName         string              `json:"model,omitempty" gorm:"type:varchar(191);index"`
+	HTTPStatus        int                 `json:"http_status,omitempty"`
+	ResponseHeaders   string              `json:"-" gorm:"type:text"`
+	ResponseFile      string              `json:"-" gorm:"type:text"`
+	Error             string              `json:"error,omitempty" gorm:"type:text"`
+	LeaseOwner        string              `json:"-" gorm:"type:varchar(128);index"`
+	LeaseUntil        int64               `json:"-" gorm:"bigint;index"`
+	NextRunAt         int64               `json:"-" gorm:"bigint;index"`
+	CreatedAt         int64               `json:"created_at" gorm:"bigint;index"`
+	StartedAt         int64               `json:"started_at,omitempty" gorm:"bigint"`
+	CompletedAt       int64               `json:"completed_at,omitempty" gorm:"bigint;index"`
+	ExpiresAt         int64               `json:"expires_at,omitempty" gorm:"bigint;index"`
+	UpdatedAt         int64               `json:"updated_at" gorm:"bigint;index"`
+	Files             []AsyncMediaFile    `json:"data,omitempty" gorm:"foreignKey:JobID;references:JobID"`
 }
 
 type AsyncMediaFile struct {

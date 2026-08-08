@@ -138,11 +138,13 @@ func TestAsyncMediaWorkerPollsNativeImageTaskReturnedBySyncRelay(t *testing.T) {
 	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		if request.Method == http.MethodPost {
+			writer.Header().Set(AsyncMediaInternalChannelHeader, "77")
 			_, _ = writer.Write([]byte(`{"task_id":"upstream-image-1","status":"queued"}`))
 			return
 		}
 		assert.Equal(t, "/v1/images/generations/upstream-image-1", request.URL.Path)
 		assert.Equal(t, "native-image-model", request.URL.Query().Get("model"))
+		assert.Equal(t, "77", request.Header.Get(AsyncMediaInternalChannelHeader))
 		_, _ = writer.Write([]byte(`{"data":[{"b64_json":"` + base64.StdEncoding.EncodeToString(imageBytes) + `"}]}`))
 	})
 	processAsyncMediaJob(handler, "worker-native-image-submit", claimed)
@@ -150,6 +152,7 @@ func TestAsyncMediaWorkerPollsNativeImageTaskReturnedBySyncRelay(t *testing.T) {
 	var waiting model.AsyncMediaJob
 	require.NoError(t, model.DB.Where("job_id = ?", jobID).First(&waiting).Error)
 	assert.Equal(t, model.AsyncMediaJobStatusWaitingUpstream, waiting.Status)
+	assert.Equal(t, 77, waiting.UpstreamChannelID)
 	assert.Equal(t, "upstream-image-1", waiting.UpstreamTaskID)
 	assert.Equal(t, "native-image-model", waiting.ModelName)
 	require.NoError(t, model.DB.Model(&model.AsyncMediaJob{}).Where("job_id = ?", jobID).Update("next_run_at", time.Now().Unix()).Error)
