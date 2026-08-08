@@ -15,6 +15,17 @@ func SetRelayRouter(router *gin.Engine) {
 	router.Use(middleware.DecompressRequestMiddleware())
 	router.Use(middleware.BodyStorageCleanup()) // 清理请求体存储
 	router.Use(middleware.StatsMiddleware())
+	asyncFileRouter := router.Group("/v1/async/files")
+	asyncFileRouter.Use(middleware.RouteTag("relay"))
+	{
+		asyncFileRouter.GET("/:file_id", controller.DownloadAsyncMediaFile)
+	}
+	asyncTaskRouter := router.Group("/v1/async/tasks")
+	asyncTaskRouter.Use(middleware.RouteTag("relay"))
+	asyncTaskRouter.Use(middleware.TokenAuthReadOnly())
+	{
+		asyncTaskRouter.GET("/:job_id", controller.GetAsyncMediaJob)
+	}
 	// https://platform.openai.com/docs/api-reference/introduction
 	modelsRouter := router.Group("/v1/models")
 	modelsRouter.Use(middleware.RouteTag("relay"))
@@ -71,6 +82,7 @@ func SetRelayRouter(router *gin.Engine) {
 	relayV1Router.Use(middleware.SystemPerformanceCheck())
 	relayV1Router.Use(middleware.TokenAuth())
 	relayV1Router.Use(middleware.ModelRequestRateLimit())
+	relayV1Router.Use(middleware.AsyncMediaEnqueue())
 	{
 		// WebSocket 路由（统一到 Relay）
 		wsRouter := relayV1Router.Group("")

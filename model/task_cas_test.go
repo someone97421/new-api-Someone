@@ -36,6 +36,8 @@ func TestMain(m *testing.M) {
 
 	if err := db.AutoMigrate(
 		&Task{},
+		&AsyncMediaJob{},
+		&AsyncMediaFile{},
 		&User{},
 		&UserSession{},
 		&AuthFlow{},
@@ -68,6 +70,8 @@ func truncateTables(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
 		DB.Exec("DELETE FROM tasks")
+		DB.Exec("DELETE FROM async_media_files")
+		DB.Exec("DELETE FROM async_media_jobs")
 		DB.Exec("DELETE FROM auth_flows")
 		DB.Exec("DELETE FROM external_identity_claims")
 		DB.Exec("DELETE FROM user_sessions")

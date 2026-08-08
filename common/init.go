@@ -198,6 +198,12 @@ func initConstantEnv() {
 	constant.TaskQueryLimit = GetEnvOrDefault("TASK_QUERY_LIMIT", 1000)
 	// 异步任务超时时间（分钟），超过此时间未完成的任务将被标记为失败并退款。0 表示禁用。
 	constant.TaskTimeoutMinutes = GetEnvOrDefault("TASK_TIMEOUT_MINUTES", 1440)
+	constant.AsyncMediaEnabled = GetEnvOrDefaultBool("ASYNC_MEDIA_ENABLED", true)
+	constant.AsyncMediaStoragePath = GetEnvOrDefaultString("ASYNC_MEDIA_STORAGE_PATH", "./data/async-media")
+	constant.AsyncMediaRetentionHours = GetEnvOrDefault("ASYNC_MEDIA_RETENTION_HOURS", 24)
+	constant.AsyncMediaWorkers = GetEnvOrDefault("ASYNC_MEDIA_WORKERS", 4)
+	constant.AsyncMediaMaxFileMB = GetEnvOrDefault("ASYNC_MEDIA_MAX_FILE_MB", 2048)
+	constant.AsyncMediaLeaseSeconds = GetEnvOrDefault("ASYNC_MEDIA_LEASE_SECONDS", 300)
 
 	soraPatchStr := GetEnvOrDefaultString("TASK_PRICE_PATCH", "")
 	if soraPatchStr != "" {

@@ -596,6 +596,10 @@ func RelayTask(c *gin.Context) {
 		service.LogTaskConsumption(c, relayInfo)
 
 		task := model.InitTask(result.Platform, relayInfo)
+		asyncJobID := c.GetHeader("X-New-API-Async-Job-ID")
+		if service.ValidateAsyncMediaInternalRequest(asyncJobID, c.GetHeader("X-New-API-Async-Worker-Signature")) {
+			task.AsyncJobID = asyncJobID
+		}
 		task.PrivateData.UpstreamTaskID = result.UpstreamTaskID
 		task.PrivateData.BillingSource = relayInfo.BillingSource
 		task.PrivateData.SubscriptionId = relayInfo.SubscriptionId

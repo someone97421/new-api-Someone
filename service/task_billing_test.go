@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/types"
@@ -21,6 +22,15 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	storagePath, err := os.MkdirTemp("", "new-api-async-media-test-")
+	if err != nil {
+		panic("failed to create async media test directory: " + err.Error())
+	}
+	constant.AsyncMediaStoragePath = storagePath
+	constant.AsyncMediaRetentionHours = 24
+	constant.AsyncMediaMaxFileMB = 16
+	constant.MaxRequestBodyMB = 16
+
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		panic("failed to open test db: " + err.Error())
@@ -41,6 +51,8 @@ func TestMain(m *testing.M) {
 
 	if err := db.AutoMigrate(
 		&model.Task{},
+		&model.AsyncMediaJob{},
+		&model.AsyncMediaFile{},
 		&model.User{},
 		&model.Token{},
 		&model.Log{},
@@ -53,7 +65,9 @@ func TestMain(m *testing.M) {
 		panic("failed to migrate: " + err.Error())
 	}
 
-	os.Exit(m.Run())
+	code := m.Run()
+	_ = os.RemoveAll(storagePath)
+	os.Exit(code)
 }
 
 // ---------------------------------------------------------------------------
@@ -64,6 +78,8 @@ func truncate(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
 		model.DB.Exec("DELETE FROM tasks")
+		model.DB.Exec("DELETE FROM async_media_files")
+		model.DB.Exec("DELETE FROM async_media_jobs")
 		model.DB.Exec("DELETE FROM users")
 		model.DB.Exec("DELETE FROM tokens")
 		model.DB.Exec("DELETE FROM logs")

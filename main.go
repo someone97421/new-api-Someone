@@ -199,6 +199,7 @@ func main() {
 		BuildFS:   buildFS,
 		IndexPage: indexPage,
 	})
+	service.StartAsyncMediaJobWorkers(server)
 	var port = os.Getenv("PORT")
 	if port == "" {
 		port = strconv.Itoa(*common.Port)

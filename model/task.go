@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	commonRelay "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"gorm.io/gorm"
 )
 
 type TaskStatus string
@@ -50,6 +52,7 @@ type Task struct {
 	CreatedAt  int64                 `json:"created_at" gorm:"index"`
 	UpdatedAt  int64                 `json:"updated_at"`
 	TaskID     string                `json:"task_id" gorm:"type:varchar(191);index"` // 第三方id，不一定有/ song id\ Task id
+	AsyncJobID string                `json:"-" gorm:"type:varchar(64);index"`
 	Platform   constant.TaskPlatform `json:"platform" gorm:"type:varchar(30);index"` // 平台
 	UserId     int                   `json:"user_id" gorm:"index"`
 	Group      string                `json:"group" gorm:"type:varchar(50)"` // 修正计费用
@@ -67,6 +70,15 @@ type Task struct {
 	// 禁止返回给用户，内部可能包含key等隐私信息
 	PrivateData TaskPrivateData `json:"-" gorm:"column:private_data;type:json"`
 	Data        json.RawMessage `json:"data" gorm:"type:json"`
+}
+
+func GetTaskByAsyncJobID(asyncJobID string) (*Task, error) {
+	var task Task
+	err := DB.Where("async_job_id = ?", asyncJobID).Order("id desc").First(&task).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &task, err
 }
 
 func (t *Task) SetData(data any) {

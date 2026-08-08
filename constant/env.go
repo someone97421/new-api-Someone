@@ -18,6 +18,12 @@ var GenerateDefaultToken bool
 var ErrorLogEnabled bool
 var TaskQueryLimit int
 var TaskTimeoutMinutes int
+var AsyncMediaEnabled bool
+var AsyncMediaStoragePath string
+var AsyncMediaRetentionHours int
+var AsyncMediaWorkers int
+var AsyncMediaMaxFileMB int
+var AsyncMediaLeaseSeconds int
 
 // temporary variable for sora patch, will be removed in future
 var TaskPricePatches []string
