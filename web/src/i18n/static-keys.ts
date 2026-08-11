@@ -43,6 +43,8 @@ export const STATIC_I18N_KEYS = [
   'Integrations',
   'Models',
   'Routing Reliability',
+  'Async Media',
+  'Ease-compatible Whale async images',
   'Maintenance',
 
   // System info

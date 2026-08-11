@@ -158,3 +158,59 @@ func TestGetAndValidOpenAIImageRequestNBounds(t *testing.T) {
 		require.Contains(t, err.Error(), boundErr)
 	})
 }
+
+func TestGetAndValidOpenAIImageRequestAcceptsEaseCompatibleFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/images/generations",
+		bytes.NewBufferString(`{
+			"model":"nano-banana-2",
+			"prompt":"一只像素小恐龙",
+			"aspect_ratio":"16:9",
+			"image_size":"2K",
+			"response_format":"url",
+			"task_count":1,
+			"async":true,
+			"images":["https://example.com/reference.png"]
+		}`),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	request, err := GetAndValidOpenAIImageRequest(c, relayconstant.RelayModeImagesGenerations)
+	require.NoError(t, err)
+	require.Equal(t, "16:9", request.AspectRatio)
+	require.Equal(t, "2K", request.ImageSize)
+	require.NotNil(t, request.TaskCount)
+	require.Equal(t, uint(1), *request.TaskCount)
+	require.NotNil(t, request.Async)
+	require.True(t, *request.Async)
+
+	forwarded, err := common.Marshal(request)
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"model":"nano-banana-2",
+		"prompt":"一只像素小恐龙",
+		"aspect_ratio":"16:9",
+		"image_size":"2K",
+		"response_format":"url",
+		"task_count":1,
+		"async":true,
+		"images":["https://example.com/reference.png"]
+	}`, string(forwarded))
+}
+
+func TestGetAndValidOpenAIImageRequestRejectsMultipleEaseTasks(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/images/generations",
+		bytes.NewBufferString(`{"model":"nano-banana-2","prompt":"cat","task_count":2}`),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	_, err := GetAndValidOpenAIImageRequest(c, relayconstant.RelayModeImagesGenerations)
+	require.EqualError(t, err, "task_count must be 1 for unified async image routing")
+}

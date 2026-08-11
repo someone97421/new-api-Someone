@@ -168,3 +168,17 @@ func TestAsyncMediaWorkerPollsNativeImageTaskReturnedBySyncRelay(t *testing.T) {
 	assert.Equal(t, model.AsyncMediaJobStatusSucceeded, persisted.Status)
 	require.Len(t, persisted.Files, 1)
 }
+
+func TestExtractAsyncMediaUpstreamTerminalError(t *testing.T) {
+	responsePath, responseFile, err := CreateAsyncMediaResponseFile("job_terminal_error")
+	require.NoError(t, err)
+	_, err = responseFile.Write([]byte(`{
+		"code":"success",
+		"data":{"status":"failed","fail_reason":"provider rejected the prompt"}
+	}`))
+	require.NoError(t, err)
+	require.NoError(t, responseFile.Close())
+	t.Cleanup(func() { _ = DeleteAsyncMediaPath(responsePath) })
+
+	assert.Equal(t, "provider rejected the prompt", extractAsyncMediaUpstreamTerminalError(responsePath))
+}

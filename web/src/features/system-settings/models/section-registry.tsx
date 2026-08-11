@@ -20,6 +20,7 @@ import { ChannelAffinitySection } from '../general/channel-affinity'
 import { IoNetDeploymentSettingsSection } from '../integrations/ionet-deployment-settings-section'
 import type { ModelSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
+import { AsyncMediaSettingsSection } from './async-media-settings-section'
 import { ClaudeSettingsCard } from './claude-settings-card'
 import { GeminiSettingsCard } from './gemini-settings-card'
 import { GlobalSettingsCard } from './global-settings-card'
@@ -90,6 +91,24 @@ const MODELS_SECTIONS = [
     ),
   },
   {
+    id: 'async-media',
+    titleKey: 'Async Media',
+    build: (settings: ModelSettings) => (
+      <AsyncMediaSettingsSection
+        defaultValues={{
+          AsyncMediaEnabled: settings.AsyncMediaEnabled,
+          AsyncMediaStoragePath: settings.AsyncMediaStoragePath,
+          AsyncMediaRetentionHours: settings.AsyncMediaRetentionHours,
+          AsyncMediaWorkers: settings.AsyncMediaWorkers,
+          AsyncMediaMaxFileMB: settings.AsyncMediaMaxFileMB,
+          AsyncMediaLeaseSeconds: settings.AsyncMediaLeaseSeconds,
+          TaskTimeoutMinutes: settings.TaskTimeoutMinutes,
+          RetryTimes: settings.RetryTimes,
+        }}
+      />
+    ),
+  },
+  {
     id: 'gemini',
     titleKey: 'Gemini',
     build: (settings: ModelSettings) => (
@@ -100,6 +119,8 @@ const MODELS_SECTIONS = [
             version_settings: settings['gemini.version_settings'],
             supported_imagine_models:
               settings['gemini.supported_imagine_models'],
+            image_generation_config_mode:
+              settings['gemini.image_generation_config_mode'],
             thinking_adapter_enabled:
               settings['gemini.thinking_adapter_enabled'],
             thinking_adapter_budget_tokens_percentage:

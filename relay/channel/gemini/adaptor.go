@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/reasoning"
 
@@ -62,67 +63,17 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 }
 
 func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.ImageRequest) (any, error) {
+	if model_setting.IsGeminiModelSupportImagine(info.UpstreamModelName) {
+		return convertGeminiNativeImageRequest(request, info, loadGeminiImageReference)
+	}
+
 	// convert size to aspect ratio but allow user to specify aspect ratio
-	aspectRatio := "1:1" // default aspect ratio
-	size := strings.TrimSpace(request.Size)
-	if size != "" {
-		if strings.Contains(size, ":") {
-			aspectRatio = size
-		} else {
-			switch size {
-			case "256x256", "512x512", "1024x1024":
-				aspectRatio = "1:1"
-			case "1536x1024":
-				aspectRatio = "3:2"
-			case "1024x1536":
-				aspectRatio = "2:3"
-			case "1024x1792":
-				aspectRatio = "9:16"
-			case "1792x1024":
-				aspectRatio = "16:9"
-			}
-		}
-	}
-	imageSize := ""
-	if request.Quality != "" {
-		imageSize = "1K"
-		switch request.Quality {
-		case "hd", "high", "2K":
-			imageSize = "2K"
-		case "standard", "medium", "low", "auto", "1K":
-			imageSize = "1K"
-		}
-	}
+	aspectRatio := resolveGeminiImageAspectRatio(request)
+	imageSize := resolveGeminiImageSize(request)
 
 	imageN := lo.FromPtrOr(request.N, uint(1))
 	if imageN == 0 {
 		imageN = 1
-	}
-
-	if model_setting.IsGeminiModelSupportImagine(info.UpstreamModelName) {
-		if imageN != 1 {
-			return nil, errors.New("Gemini native image generation supports exactly one image per request")
-		}
-		imageConfig := map[string]any{"aspectRatio": aspectRatio}
-		if imageSize != "" {
-			imageConfig["imageSize"] = imageSize
-		}
-		imageConfigJSON, err := common.Marshal(imageConfig)
-		if err != nil {
-			return nil, fmt.Errorf("marshal Gemini image config: %w", err)
-		}
-		return &dto.GeminiChatRequest{
-			Contents: []dto.GeminiChatContent{
-				{
-					Role:  "user",
-					Parts: []dto.GeminiPart{{Text: request.Prompt}},
-				},
-			},
-			GenerationConfig: dto.GeminiChatGenerationConfig{
-				ResponseModalities: []string{"TEXT", "IMAGE"},
-				ImageConfig:        imageConfigJSON,
-			},
-		}, nil
 	}
 
 	if !strings.HasPrefix(info.UpstreamModelName, "imagen") {
@@ -145,6 +96,158 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 	}
 
 	return geminiRequest, nil
+}
+
+type geminiImageReferenceLoader func(reference string) (mimeType string, data string, err error)
+
+const maxGeminiImageReferences = 16
+
+func convertGeminiNativeImageRequest(request dto.ImageRequest, info *relaycommon.RelayInfo, loadReference geminiImageReferenceLoader) (*dto.GeminiChatRequest, error) {
+	if info == nil || !model_setting.IsGeminiModelSupportImagine(info.UpstreamModelName) {
+		return nil, errors.New("not supported model for Gemini image generation")
+	}
+
+	imageN := lo.FromPtrOr(request.N, uint(1))
+	if request.TaskCount != nil {
+		imageN = *request.TaskCount
+	}
+	if imageN == 0 {
+		imageN = 1
+	}
+	if imageN != 1 {
+		return nil, errors.New("Gemini native image generation supports exactly one image per request")
+	}
+
+	parts := []dto.GeminiPart{{Text: request.Prompt}}
+	references, err := extractGeminiImageReferences(request)
+	if err != nil {
+		return nil, err
+	}
+	for _, reference := range references {
+		mimeType, data, err := loadReference(reference)
+		if err != nil {
+			return nil, fmt.Errorf("load Gemini reference image: %w", err)
+		}
+		parts = append(parts, dto.GeminiPart{
+			InlineData: &dto.GeminiInlineData{MimeType: mimeType, Data: data},
+		})
+	}
+
+	imageConfig := &dto.GeminiResponseImageConfig{
+		AspectRatio: resolveGeminiImageAspectRatio(request),
+		ImageSize:   resolveGeminiImageSize(request),
+	}
+	generationConfig := dto.GeminiChatGenerationConfig{
+		ResponseModalities: []string{"TEXT", "IMAGE"},
+	}
+	if model_setting.GetGeminiSettings().ImageGenerationConfigMode == model_setting.GeminiImageGenerationConfigLegacy {
+		legacyImageConfig, err := common.Marshal(imageConfig)
+		if err != nil {
+			return nil, fmt.Errorf("marshal legacy Gemini image config: %w", err)
+		}
+		generationConfig.ImageConfig = legacyImageConfig
+	} else {
+		generationConfig.ResponseFormat = &dto.GeminiResponseFormat{Image: imageConfig}
+	}
+	return &dto.GeminiChatRequest{
+		Contents:         []dto.GeminiChatContent{{Role: "user", Parts: parts}},
+		GenerationConfig: generationConfig,
+	}, nil
+}
+
+func resolveGeminiImageAspectRatio(request dto.ImageRequest) string {
+	if aspectRatio := strings.TrimSpace(request.AspectRatio); aspectRatio != "" {
+		return aspectRatio
+	}
+	size := strings.TrimSpace(request.Size)
+	if strings.Contains(size, ":") {
+		return size
+	}
+	switch size {
+	case "1536x1024":
+		return "3:2"
+	case "1024x1536":
+		return "2:3"
+	case "1024x1792":
+		return "9:16"
+	case "1792x1024":
+		return "16:9"
+	default:
+		return "1:1"
+	}
+}
+
+func resolveGeminiImageSize(request dto.ImageRequest) string {
+	if imageSize := strings.ToUpper(strings.TrimSpace(request.ImageSize)); imageSize != "" {
+		return imageSize
+	}
+	if resolution := strings.ToUpper(strings.TrimSpace(request.Resolution)); resolution != "" {
+		return resolution
+	}
+	switch strings.ToLower(strings.TrimSpace(request.Quality)) {
+	case "hd", "high", "2k":
+		return "2K"
+	case "standard", "medium", "low", "auto", "1k":
+		return "1K"
+	default:
+		return ""
+	}
+}
+
+func extractGeminiImageReferences(request dto.ImageRequest) ([]string, error) {
+	references := make([]string, 0)
+	seen := make(map[string]bool)
+	fields := []struct {
+		name string
+		raw  []byte
+	}{
+		{name: "image", raw: request.Image},
+		{name: "images", raw: request.Images},
+		{name: "image_url", raw: request.ImageURL},
+		{name: "image_urls", raw: request.ImageURLs},
+	}
+	for _, field := range fields {
+		name := field.name
+		raw := field.raw
+		if len(raw) == 0 || string(raw) == "null" {
+			continue
+		}
+		var single string
+		if err := common.Unmarshal(raw, &single); err == nil {
+			single = strings.TrimSpace(single)
+			if single != "" && !seen[single] {
+				seen[single] = true
+				references = append(references, single)
+			}
+			continue
+		}
+		var multiple []string
+		if err := common.Unmarshal(raw, &multiple); err != nil {
+			return nil, fmt.Errorf("%s must be a URL string or URL string array", name)
+		}
+		for _, reference := range multiple {
+			reference = strings.TrimSpace(reference)
+			if reference != "" && !seen[reference] {
+				seen[reference] = true
+				references = append(references, reference)
+			}
+		}
+	}
+	if len(references) > maxGeminiImageReferences {
+		return nil, fmt.Errorf("Gemini image generation accepts at most %d reference images", maxGeminiImageReferences)
+	}
+	return references, nil
+}
+
+func loadGeminiImageReference(reference string) (string, string, error) {
+	switch {
+	case strings.HasPrefix(reference, "https://") || strings.HasPrefix(reference, "http://"):
+		return service.GetImageFromUrl(reference)
+	case strings.HasPrefix(reference, "data:image/"):
+		return service.DecodeBase64FileData(reference)
+	default:
+		return "", "", errors.New("reference image must be an HTTP/HTTPS URL or image data URI")
+	}
 }
 
 func (a *Adaptor) Init(info *relaycommon.RelayInfo) {

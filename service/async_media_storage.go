@@ -28,14 +28,9 @@ var (
 
 func InitAsyncMediaStorage() error {
 	asyncMediaStorageOnce.Do(func() {
-		root, err := filepath.Abs(strings.TrimSpace(constant.AsyncMediaStoragePath))
+		root, err := ValidateAsyncMediaStoragePath(constant.AsyncMediaStoragePath)
 		if err != nil {
 			asyncMediaStorageErr = err
-			return
-		}
-		volumeRoot := filepath.Clean(filepath.VolumeName(root) + string(os.PathSeparator))
-		if filepath.Clean(root) == volumeRoot {
-			asyncMediaStorageErr = errors.New("ASYNC_MEDIA_STORAGE_PATH cannot be a filesystem root")
 			return
 		}
 		for _, dir := range []string{"input", "response", "result"} {
@@ -47,6 +42,22 @@ func InitAsyncMediaStorage() error {
 		asyncMediaStorageRoot = root
 	})
 	return asyncMediaStorageErr
+}
+
+func ValidateAsyncMediaStoragePath(storagePath string) (string, error) {
+	trimmed := strings.TrimSpace(storagePath)
+	if trimmed == "" {
+		return "", errors.New("async media storage path cannot be empty")
+	}
+	root, err := filepath.Abs(trimmed)
+	if err != nil {
+		return "", err
+	}
+	volumeRoot := filepath.Clean(filepath.VolumeName(root) + string(os.PathSeparator))
+	if filepath.Clean(root) == volumeRoot {
+		return "", errors.New("async media storage path cannot be a filesystem root")
+	}
+	return root, nil
 }
 
 func asyncMediaPath(kind string, name string) (string, string, error) {
@@ -237,7 +248,7 @@ func collectAsyncMediaValues(job *model.AsyncMediaJob, value any, key string, se
 
 func isAsyncMediaURLKey(key string) bool {
 	switch key {
-	case "url", "image_url", "video_url", "download_url", "result_url":
+	case "url", "image_url", "video_url", "download_url", "result_url", "result_urls", "result_asset_urls":
 		return true
 	default:
 		return false

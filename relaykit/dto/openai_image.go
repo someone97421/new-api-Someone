@@ -19,8 +19,13 @@ type ImageRequest struct {
 	Prompt            string          `json:"prompt" binding:"required"`
 	N                 *uint           `json:"n,omitempty"`
 	Size              string          `json:"size,omitempty"`
+	AspectRatio       string          `json:"aspect_ratio,omitempty"`
+	ImageSize         string          `json:"image_size,omitempty"`
+	Resolution        string          `json:"resolution,omitempty"`
 	Quality           string          `json:"quality,omitempty"`
 	ResponseFormat    string          `json:"response_format,omitempty"`
+	TaskCount         *uint           `json:"task_count,omitempty"`
+	Async             *bool           `json:"async,omitempty"`
 	Style             json.RawMessage `json:"style,omitempty"`
 	User              json.RawMessage `json:"user,omitempty"`
 	ExtraFields       json.RawMessage `json:"extra_fields,omitempty"`
@@ -31,6 +36,8 @@ type ImageRequest struct {
 	PartialImages     json.RawMessage `json:"partial_images,omitempty"`
 	Stream            *bool           `json:"stream,omitempty"`
 	Images            json.RawMessage `json:"images,omitempty"`
+	ImageURL          json.RawMessage `json:"image_url,omitempty"`
+	ImageURLs         json.RawMessage `json:"image_urls,omitempty"`
 	Mask              json.RawMessage `json:"mask,omitempty"`
 	InputFidelity     json.RawMessage `json:"input_fidelity,omitempty"`
 	Watermark         *bool           `json:"watermark,omitempty"`
@@ -75,6 +82,11 @@ func (r ImageRequest) MarshalJSON() ([]byte, error) {
 	// 将已定义字段转为 map
 	type Alias ImageRequest
 	alias := Alias(r)
+	// Ease-compatible async image APIs use task_count instead of OpenAI n and
+	// may reject requests that contain both fields.
+	if r.TaskCount != nil {
+		alias.N = nil
+	}
 	base, err := kitutil.Marshal(alias)
 	if err != nil {
 		return nil, err

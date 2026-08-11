@@ -2,15 +2,77 @@ package service
 
 import (
 	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestValidateAsyncMediaStoragePath(t *testing.T) {
+	_, err := ValidateAsyncMediaStoragePath(" ")
+	require.Error(t, err)
+
+	resolved, err := ValidateAsyncMediaStoragePath("./data/async-media")
+	require.NoError(t, err)
+	assert.True(t, filepath.IsAbs(resolved))
+}
+
+func TestStoreAsyncMediaResultsRecognizesWhaleResultURLArrays(t *testing.T) {
+	fetchSetting := system_setting.GetFetchSetting()
+	originalFetchSetting := *fetchSetting
+	originalHTTPClient := httpClient
+	originalProtectedHTTPClient := ssrfProtectedHTTPClient
+	fetchSetting.EnableSSRFProtection = false
+	t.Cleanup(func() {
+		*fetchSetting = originalFetchSetting
+		httpClient = originalHTTPClient
+		ssrfProtectedHTTPClient = originalProtectedHTTPClient
+	})
+
+	imageBytes := []byte("whale-image")
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "image/png")
+		_, _ = writer.Write(imageBytes)
+	}))
+	t.Cleanup(server.Close)
+	httpClient = server.Client()
+
+	job := &model.AsyncMediaJob{JobID: "job_whale_result_urls", UserID: 7}
+	responsePath, responseFile, err := CreateAsyncMediaResponseFile(job.JobID)
+	require.NoError(t, err)
+	payload, err := common.Marshal(map[string]any{
+		"code": "success",
+		"data": map[string]any{
+			"status":            "success",
+			"result_urls":       []string{server.URL + "/result.png"},
+			"result_asset_urls": []string{server.URL + "/result.png"},
+		},
+	})
+	require.NoError(t, err)
+	_, err = responseFile.Write(payload)
+	require.NoError(t, err)
+	require.NoError(t, responseFile.Close())
+	t.Cleanup(func() { _ = DeleteAsyncMediaPath(responsePath) })
+
+	files, err := StoreAsyncMediaResults(job, responsePath, "application/json")
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	t.Cleanup(func() { _ = DeleteAsyncMediaPath(files[0].Path) })
+
+	absolute, err := ResolveAsyncMediaPath(files[0].Path)
+	require.NoError(t, err)
+	stored, err := os.ReadFile(absolute)
+	require.NoError(t, err)
+	assert.Equal(t, imageBytes, stored)
+}
 
 func TestStoreAsyncMediaResultsDecodesBase64WithoutDatabaseBlob(t *testing.T) {
 	job := &model.AsyncMediaJob{JobID: "job_base64_result", UserID: 7}

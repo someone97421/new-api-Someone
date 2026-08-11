@@ -345,9 +345,19 @@ type GeminiChatGenerationConfig struct {
 	MediaResolution            MediaResolution       `json:"mediaResolution,omitempty"`
 	Seed                       *int64                `json:"seed,omitempty"`
 	ResponseModalities         []string              `json:"responseModalities,omitempty"`
+	ResponseFormat             *GeminiResponseFormat `json:"responseFormat,omitempty"`
 	ThinkingConfig             *GeminiThinkingConfig `json:"thinkingConfig,omitempty"`
 	SpeechConfig               json.RawMessage       `json:"speechConfig,omitempty"` // RawMessage to allow flexible speech config
 	ImageConfig                json.RawMessage       `json:"imageConfig,omitempty"`  // RawMessage to allow flexible image config
+}
+
+type GeminiResponseFormat struct {
+	Image *GeminiResponseImageConfig `json:"image,omitempty"`
+}
+
+type GeminiResponseImageConfig struct {
+	AspectRatio string `json:"aspectRatio,omitempty"`
+	ImageSize   string `json:"imageSize,omitempty"`
 }
 
 // UnmarshalJSON allows GeminiChatGenerationConfig to accept both snake_case and camelCase fields.
@@ -369,6 +379,7 @@ func (c *GeminiChatGenerationConfig) UnmarshalJSON(data []byte) error {
 		EnableEnhancedCivicAnswersSnake *bool                 `json:"enable_enhanced_civic_answers,omitempty"`
 		MediaResolutionSnake            MediaResolution       `json:"media_resolution,omitempty"`
 		ResponseModalitiesSnake         []string              `json:"response_modalities,omitempty"`
+		ResponseFormatSnake             *GeminiResponseFormat `json:"response_format,omitempty"`
 		ThinkingConfigSnake             *GeminiThinkingConfig `json:"thinking_config,omitempty"`
 		SpeechConfigSnake               json.RawMessage       `json:"speech_config,omitempty"`
 		ImageConfigSnake                json.RawMessage       `json:"image_config,omitempty"`
@@ -422,6 +433,9 @@ func (c *GeminiChatGenerationConfig) UnmarshalJSON(data []byte) error {
 	}
 	if len(aux.ResponseModalitiesSnake) > 0 {
 		c.ResponseModalities = aux.ResponseModalitiesSnake
+	}
+	if aux.ResponseFormatSnake != nil {
+		c.ResponseFormat = aux.ResponseFormatSnake
 	}
 	if aux.ThinkingConfigSnake != nil {
 		c.ThinkingConfig = aux.ThinkingConfigSnake

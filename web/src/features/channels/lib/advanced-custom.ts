@@ -282,6 +282,21 @@ export const ADVANCED_CUSTOM_TEMPLATE_OPTIONS: AdvancedCustomTemplateOption[] =
       },
     },
     {
+      value: 'ease_whale_async_images',
+      label: 'Ease-compatible Whale async images',
+      config: {
+        advanced_routes: [
+          {
+            incoming_path: '/v1/images/generations',
+            upstream_path: '/v1/image/generations',
+            converter: 'none',
+            models: ['nano-banana-2'],
+            auth: bearerHeaderAuth(),
+          },
+        ],
+      },
+    },
+    {
       value: 'official_claude_messages',
       label: 'Official Claude Messages',
       config: {

@@ -58,7 +58,7 @@ func (w *asyncMediaResponseWriter) Write(data []byte) (int, error) {
 func (w *asyncMediaResponseWriter) Flush() {}
 
 func StartAsyncMediaJobWorkers(handler http.Handler) {
-	if !constant.AsyncMediaEnabled || handler == nil {
+	if handler == nil {
 		return
 	}
 	if err := InitAsyncMediaStorage(); err != nil {
@@ -74,7 +74,7 @@ func StartAsyncMediaJobWorkers(handler http.Handler) {
 		go runAsyncMediaWorker(handler, workerID)
 	}
 	go runAsyncMediaMaintenance()
-	common.SysLog(fmt.Sprintf("异步媒体 Worker 已启动，数量：%d", workerCount))
+	common.SysLog(fmt.Sprintf("异步媒体 Worker 已启动，数量：%d，接收新任务：%t", workerCount, constant.AsyncMediaEnabled))
 }
 
 func runAsyncMediaWorker(handler http.Handler, workerID string) {
@@ -347,8 +347,8 @@ func processAsyncImageUpstreamTask(handler http.Handler, workerID string, job *m
 		return
 	}
 	files, err := StoreAsyncMediaResults(job, responsePath, writer.header.Get("Content-Type"))
-	_ = DeleteAsyncMediaPath(responsePath)
 	if err != nil {
+		_ = DeleteAsyncMediaPath(responsePath)
 		_ = model.UpdateAsyncMediaJob(job.JobID, workerID, map[string]any{
 			"status":      model.AsyncMediaJobStatusWaitingUpstream,
 			"error":       err.Error(),
@@ -357,6 +357,12 @@ func processAsyncImageUpstreamTask(handler http.Handler, workerID string, job *m
 		return
 	}
 	if len(files) == 0 {
+		terminalError := extractAsyncMediaUpstreamTerminalError(responsePath)
+		_ = DeleteAsyncMediaPath(responsePath)
+		if terminalError != "" {
+			failAsyncMediaJob(workerID, job, http.StatusBadGateway, terminalError, model.AsyncMediaBillingSettled)
+			return
+		}
 		_ = model.UpdateAsyncMediaJob(job.JobID, workerID, map[string]any{
 			"status":      model.AsyncMediaJobStatusWaitingUpstream,
 			"error":       "上游图片任务仍在处理中",
@@ -364,6 +370,7 @@ func processAsyncImageUpstreamTask(handler http.Handler, workerID string, job *m
 		})
 		return
 	}
+	_ = DeleteAsyncMediaPath(responsePath)
 	if err := model.CreateAsyncMediaFiles(files); err != nil {
 		DeleteAsyncMediaFiles(files)
 		_ = model.UpdateAsyncMediaJob(job.JobID, workerID, map[string]any{
@@ -383,6 +390,52 @@ func processAsyncImageUpstreamTask(handler http.Handler, workerID string, job *m
 	}); err != nil {
 		logger.LogError(context.Background(), fmt.Sprintf("异步图片任务成功状态写入失败 job=%s: %v", job.JobID, err))
 	}
+}
+
+func extractAsyncMediaUpstreamTerminalError(responsePath string) string {
+	absolute, err := ResolveAsyncMediaPath(responsePath)
+	if err != nil {
+		return ""
+	}
+	body, err := os.ReadFile(absolute)
+	if err != nil {
+		return ""
+	}
+	var payload map[string]any
+	if err := common.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	code := strings.ToLower(strings.TrimSpace(fmt.Sprint(payload["code"])))
+	if code != "" && code != "<nil>" && code != "success" {
+		return firstAsyncMediaErrorMessage(payload, "upstream image task query failed")
+	}
+	statusSource := payload
+	if data, ok := payload["data"].(map[string]any); ok {
+		statusSource = data
+	}
+	status := strings.ToLower(strings.TrimSpace(fmt.Sprint(statusSource["status"])))
+	switch status {
+	case "failure", "failed", "error", "cancelled", "canceled":
+		return firstAsyncMediaErrorMessage(payload, "upstream image task failed")
+	default:
+		return ""
+	}
+}
+
+func firstAsyncMediaErrorMessage(payload map[string]any, fallback string) string {
+	if data, ok := payload["data"].(map[string]any); ok {
+		for _, key := range []string{"fail_reason", "error", "message"} {
+			if value := strings.TrimSpace(fmt.Sprint(data[key])); value != "" && value != "<nil>" {
+				return value
+			}
+		}
+	}
+	for _, key := range []string{"message", "error"} {
+		if value := strings.TrimSpace(fmt.Sprint(payload[key])); value != "" && value != "<nil>" {
+			return value
+		}
+	}
+	return fallback
 }
 
 func extractAsyncMediaTaskID(responsePath string) string {

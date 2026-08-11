@@ -2,6 +2,8 @@ package gemini
 
 import (
 	"bytes"
+	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +13,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,7 +40,83 @@ func TestConvertImageRequestToGeminiNativeImageGeneration(t *testing.T) {
 	assert.Equal(t, "一只像素小恐龙", request.Contents[0].Parts[0].Text)
 	assert.Equal(t, []string{"TEXT", "IMAGE"}, request.GenerationConfig.ResponseModalities)
 	assert.Nil(t, request.GenerationConfig.CandidateCount)
-	assert.JSONEq(t, `{"aspectRatio":"3:2","imageSize":"2K"}`, string(request.GenerationConfig.ImageConfig))
+	require.NotNil(t, request.GenerationConfig.ResponseFormat)
+	assert.Equal(t, "3:2", request.GenerationConfig.ResponseFormat.Image.AspectRatio)
+	assert.Equal(t, "2K", request.GenerationConfig.ResponseFormat.Image.ImageSize)
+	assert.Empty(t, request.GenerationConfig.ImageConfig)
+}
+
+func TestConvertEaseCompatibleImageRequestToGeminiNativeImageGeneration(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gemini-3.1-flash-image"},
+	}
+	one := uint(1)
+	async := true
+	images, err := common.Marshal([]string{"https://example.com/reference.png"})
+	require.NoError(t, err)
+
+	converted, err := convertGeminiNativeImageRequest(dto.ImageRequest{
+		Prompt:      "保持主体，改为夜景",
+		AspectRatio: "16:9",
+		ImageSize:   "4K",
+		TaskCount:   &one,
+		Async:       &async,
+		Images:      images,
+	}, info, func(reference string) (string, string, error) {
+		require.Equal(t, "https://example.com/reference.png", reference)
+		return "image/png", base64.StdEncoding.EncodeToString([]byte("reference")), nil
+	})
+	require.NoError(t, err)
+	require.Len(t, converted.Contents, 1)
+	require.Len(t, converted.Contents[0].Parts, 2)
+	assert.Equal(t, "保持主体，改为夜景", converted.Contents[0].Parts[0].Text)
+	require.NotNil(t, converted.Contents[0].Parts[1].InlineData)
+	assert.Equal(t, "image/png", converted.Contents[0].Parts[1].InlineData.MimeType)
+	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("reference")), converted.Contents[0].Parts[1].InlineData.Data)
+	require.NotNil(t, converted.GenerationConfig.ResponseFormat)
+	assert.Equal(t, "16:9", converted.GenerationConfig.ResponseFormat.Image.AspectRatio)
+	assert.Equal(t, "4K", converted.GenerationConfig.ResponseFormat.Image.ImageSize)
+}
+
+func TestConvertGeminiNativeImageRequestSupportsLegacyImageConfig(t *testing.T) {
+	settings := model_setting.GetGeminiSettings()
+	originalMode := settings.ImageGenerationConfigMode
+	settings.ImageGenerationConfigMode = model_setting.GeminiImageGenerationConfigLegacy
+	t.Cleanup(func() { settings.ImageGenerationConfigMode = originalMode })
+
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gemini-3.1-flash-image"},
+	}
+	converted, err := convertGeminiNativeImageRequest(dto.ImageRequest{
+		Prompt:      "legacy gateway",
+		AspectRatio: "1:1",
+		ImageSize:   "2K",
+	}, info, func(string) (string, string, error) {
+		return "", "", nil
+	})
+	require.NoError(t, err)
+	assert.Nil(t, converted.GenerationConfig.ResponseFormat)
+	assert.JSONEq(t, `{"aspectRatio":"1:1","imageSize":"2K"}`, string(converted.GenerationConfig.ImageConfig))
+}
+
+func TestConvertGeminiNativeImageRequestRejectsTooManyReferences(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gemini-3.1-flash-image"},
+	}
+	references := make([]string, maxGeminiImageReferences+1)
+	for index := range references {
+		references[index] = fmt.Sprintf("https://example.com/reference-%d.png", index)
+	}
+	images, err := common.Marshal(references)
+	require.NoError(t, err)
+
+	_, err = convertGeminiNativeImageRequest(dto.ImageRequest{
+		Prompt: "too many references",
+		Images: images,
+	}, info, func(string) (string, string, error) {
+		return "image/png", "data", nil
+	})
+	require.EqualError(t, err, "Gemini image generation accepts at most 16 reference images")
 }
 
 func TestConvertImageRequestRejectsMultipleGeminiNativeImagesForChannelRetry(t *testing.T) {

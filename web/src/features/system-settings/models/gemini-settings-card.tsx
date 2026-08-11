@@ -24,6 +24,7 @@ import { toast } from 'sonner'
 import * as z from 'zod'
 
 import { JsonCodeEditor } from '@/components/json-code-editor'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import {
   Form,
   FormControl,
@@ -34,6 +35,14 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 
 import {
@@ -85,6 +94,7 @@ const schema = z.object({
         })
       }
     }),
+    image_generation_config_mode: z.enum(['official', 'legacy']),
     thinking_adapter_enabled: z.boolean(),
     thinking_adapter_budget_tokens_percentage: z.coerce
       .number()
@@ -102,6 +112,7 @@ type FlatGeminiSettings = {
   'gemini.safety_settings': string
   'gemini.version_settings': string
   'gemini.supported_imagine_models': string
+  'gemini.image_generation_config_mode': 'official' | 'legacy'
   'gemini.thinking_adapter_enabled': boolean
   'gemini.thinking_adapter_budget_tokens_percentage': number
   'gemini.function_call_thought_signature_enabled': boolean
@@ -125,6 +136,8 @@ export function GeminiSettingsCard({ defaultValues }: GeminiSettingsCardProps) {
     'gemini.supported_imagine_models': normalizeJsonString(
       defaultValues.gemini.supported_imagine_models
     ),
+    'gemini.image_generation_config_mode':
+      defaultValues.gemini.image_generation_config_mode || 'official',
     'gemini.thinking_adapter_enabled':
       defaultValues.gemini.thinking_adapter_enabled,
     'gemini.thinking_adapter_budget_tokens_percentage': Number(
@@ -145,6 +158,8 @@ export function GeminiSettingsCard({ defaultValues }: GeminiSettingsCardProps) {
       supported_imagine_models: formatJsonForTextarea(
         values.gemini.supported_imagine_models
       ),
+      image_generation_config_mode:
+        values.gemini.image_generation_config_mode || 'official',
       thinking_adapter_enabled: values.gemini.thinking_adapter_enabled,
       thinking_adapter_budget_tokens_percentage:
         values.gemini.thinking_adapter_budget_tokens_percentage,
@@ -175,6 +190,8 @@ export function GeminiSettingsCard({ defaultValues }: GeminiSettingsCardProps) {
       'gemini.supported_imagine_models': normalizeJsonString(
         defaultValues.gemini.supported_imagine_models
       ),
+      'gemini.image_generation_config_mode':
+        defaultValues.gemini.image_generation_config_mode || 'official',
       'gemini.thinking_adapter_enabled':
         defaultValues.gemini.thinking_adapter_enabled,
       'gemini.thinking_adapter_budget_tokens_percentage': Number(
@@ -202,6 +219,8 @@ export function GeminiSettingsCard({ defaultValues }: GeminiSettingsCardProps) {
       'gemini.supported_imagine_models': normalizeJsonString(
         values.gemini.supported_imagine_models
       ),
+      'gemini.image_generation_config_mode':
+        values.gemini.image_generation_config_mode,
       'gemini.thinking_adapter_enabled': values.gemini.thinking_adapter_enabled,
       'gemini.thinking_adapter_budget_tokens_percentage':
         values.gemini.thinking_adapter_budget_tokens_percentage,
@@ -240,6 +259,52 @@ export function GeminiSettingsCard({ defaultValues }: GeminiSettingsCardProps) {
           <SettingsPageFormActions
             onSave={form.handleSubmit(onSubmit)}
             isSaving={updateOption.isPending}
+          />
+          <Alert>
+            <AlertTitle>{t('Ease-compatible Gemini images')}</AlertTitle>
+            <AlertDescription>
+              {t(
+                'OpenAI-style image requests are converted to Gemini generateContent. Aspect ratio, resolution, and reference images are translated automatically.'
+              )}
+            </AlertDescription>
+          </Alert>
+
+          <FormField
+            control={form.control}
+            name='gemini.image_generation_config_mode'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Gemini image configuration format')}</FormLabel>
+                <Select
+                  value={field.value}
+                  onValueChange={(value) =>
+                    field.onChange(value === 'legacy' ? 'legacy' : 'official')
+                  }
+                >
+                  <FormControl>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent alignItemWithTrigger={false}>
+                    <SelectGroup>
+                      <SelectItem value='official'>
+                        {t('Official responseFormat (recommended)')}
+                      </SelectItem>
+                      <SelectItem value='legacy'>
+                        {t('Legacy imageConfig')}
+                      </SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FormDescription>
+                  {t(
+                    'Use the recommended official format for Gemini. Select legacy only when an older compatible gateway rejects responseFormat.'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
           />
           <FormField
             control={form.control}

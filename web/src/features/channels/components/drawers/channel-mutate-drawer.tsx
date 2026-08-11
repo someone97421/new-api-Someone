@@ -166,6 +166,8 @@ import {
   findMissingModelsInMapping,
   validateModelMappingJson,
   hasAdvancedSettingsErrors,
+  getGeminiBananaChannelPreset,
+  getWhaleBananaChannelPreset,
 } from '../../lib'
 import {
   collectInvalidStatusCodeEntries,
@@ -1518,6 +1520,47 @@ export function ChannelMutateDrawer({
     form.setValue('models', '')
     toast.success(t('Cleared all models'))
   }, [form, t])
+
+  const handleApplyBananaRoutingPreset = useCallback(() => {
+    const preset =
+      currentType === 24
+        ? getGeminiBananaChannelPreset()
+        : getWhaleBananaChannelPreset()
+
+    const presetModels =
+      currentType === 24
+        ? [...currentModelsArray, ...preset.models]
+        : preset.models
+    form.setValue('models', formatModelsArray(presetModels), {
+      shouldDirty: true,
+      shouldValidate: true,
+    })
+    form.setValue('model_mapping', preset.modelMapping, {
+      shouldDirty: true,
+      shouldValidate: true,
+    })
+    form.setValue('priority', preset.priority, {
+      shouldDirty: true,
+      shouldValidate: true,
+    })
+    form.setValue('test_model', preset.testModel, {
+      shouldDirty: true,
+      shouldValidate: true,
+    })
+    if (preset.advancedCustom !== undefined) {
+      form.setValue('advanced_custom', preset.advancedCustom, {
+        shouldDirty: true,
+        shouldValidate: true,
+      })
+    }
+    if (preset.imageTaskQueryPath !== undefined) {
+      form.setValue('image_task_query_path', preset.imageTaskQueryPath, {
+        shouldDirty: true,
+        shouldValidate: true,
+      })
+    }
+    toast.success(t('Banana routing preset applied'))
+  }, [currentModelsArray, currentType, form, t])
 
   const handleCopyModels = useCallback(async () => {
     const models = form.getValues('models')
@@ -3265,6 +3308,36 @@ export function ChannelMutateDrawer({
                     >
                       <ChannelModelsSection>
                         <div className='space-y-5'>
+                          {(currentType === 24 ||
+                            currentType === CHANNEL_TYPE_ADVANCED_CUSTOM) && (
+                            <Alert>
+                              <AlertDescription className='flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between'>
+                                <span>
+                                  {currentType === 24
+                                    ? t(
+                                        'Use the Gemini banana preset to expose nano-banana-2 and map it to the official Gemini image model with primary priority.'
+                                      )
+                                    : t(
+                                        'Use the Whale banana preset to fill the async submit path, polling path, public model, and backup priority.'
+                                      )}
+                                </span>
+                                <Button
+                                  type='button'
+                                  variant='outline'
+                                  size='sm'
+                                  onClick={handleApplyBananaRoutingPreset}
+                                >
+                                  <Wand2
+                                    className='mr-2 h-4 w-4'
+                                    aria-hidden='true'
+                                  />
+                                  {currentType === 24
+                                    ? t('Apply Gemini banana preset')
+                                    : t('Apply Whale banana preset')}
+                                </Button>
+                              </AlertDescription>
+                            </Alert>
+                          )}
                           <div className='border-border/60 bg-muted/10 rounded-lg border p-4'>
                             <FormField
                               control={form.control}

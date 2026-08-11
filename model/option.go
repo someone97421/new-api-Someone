@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -156,6 +157,13 @@ func InitOptionMap() {
 	//common.OptionMap["ChatLink2"] = common.ChatLink2
 	common.OptionMap["QuotaPerUnit"] = strconv.FormatFloat(common.QuotaPerUnit, 'f', -1, 64)
 	common.OptionMap["RetryTimes"] = strconv.Itoa(common.RetryTimes)
+	common.OptionMap["AsyncMediaEnabled"] = strconv.FormatBool(constant.AsyncMediaEnabled)
+	common.OptionMap["AsyncMediaStoragePath"] = constant.AsyncMediaStoragePath
+	common.OptionMap["AsyncMediaRetentionHours"] = strconv.Itoa(constant.AsyncMediaRetentionHours)
+	common.OptionMap["AsyncMediaWorkers"] = strconv.Itoa(constant.AsyncMediaWorkers)
+	common.OptionMap["AsyncMediaMaxFileMB"] = strconv.Itoa(constant.AsyncMediaMaxFileMB)
+	common.OptionMap["AsyncMediaLeaseSeconds"] = strconv.Itoa(constant.AsyncMediaLeaseSeconds)
+	common.OptionMap["TaskTimeoutMinutes"] = strconv.Itoa(constant.TaskTimeoutMinutes)
 	common.OptionMap["DataExportInterval"] = strconv.Itoa(common.DataExportInterval)
 	common.OptionMap["DataExportDefaultTime"] = common.DataExportDefaultTime
 	common.OptionMap["DefaultCollapseSidebar"] = strconv.FormatBool(common.DefaultCollapseSidebar)
@@ -547,6 +555,20 @@ func updateOptionMap(key string, value string) (err error) {
 		err = setting.UpdateModelRequestRateLimitGroupByJSONString(value)
 	case "RetryTimes":
 		common.RetryTimes, _ = strconv.Atoi(value)
+	case "AsyncMediaEnabled":
+		constant.AsyncMediaEnabled = value == "true"
+	case "AsyncMediaStoragePath":
+		constant.AsyncMediaStoragePath = value
+	case "AsyncMediaRetentionHours":
+		constant.AsyncMediaRetentionHours, _ = strconv.Atoi(value)
+	case "AsyncMediaWorkers":
+		constant.AsyncMediaWorkers, _ = strconv.Atoi(value)
+	case "AsyncMediaMaxFileMB":
+		constant.AsyncMediaMaxFileMB, _ = strconv.Atoi(value)
+	case "AsyncMediaLeaseSeconds":
+		constant.AsyncMediaLeaseSeconds, _ = strconv.Atoi(value)
+	case "TaskTimeoutMinutes":
+		constant.TaskTimeoutMinutes, _ = strconv.Atoi(value)
 	case "DataExportInterval":
 		common.DataExportInterval, _ = strconv.Atoi(value)
 	case "DataExportDefaultTime":

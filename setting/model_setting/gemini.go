@@ -2,12 +2,18 @@ package model_setting
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/config"
 )
 
 const defaultGeminiSafetySetting = "OFF"
+
+const (
+	GeminiImageGenerationConfigOfficial = "official"
+	GeminiImageGenerationConfigLegacy   = "legacy"
+)
 
 var validGeminiSafetySettings = map[string]struct{}{
 	"OFF":                              {},
@@ -23,6 +29,7 @@ type GeminiSettings struct {
 	SafetySettings                        map[string]string `json:"safety_settings"`
 	VersionSettings                       map[string]string `json:"version_settings"`
 	SupportedImagineModels                []string          `json:"supported_imagine_models"`
+	ImageGenerationConfigMode             string            `json:"image_generation_config_mode"`
 	ThinkingAdapterEnabled                bool              `json:"thinking_adapter_enabled"`
 	ThinkingAdapterBudgetTokensPercentage float64           `json:"thinking_adapter_budget_tokens_percentage"`
 	FunctionCallThoughtSignatureEnabled   bool              `json:"function_call_thought_signature_enabled"`
@@ -48,10 +55,20 @@ var defaultGeminiSettings = GeminiSettings{
 		"gemini-3.1-flash-image-preview",
 		"nano-banana-pro-preview",
 	},
+	ImageGenerationConfigMode:             GeminiImageGenerationConfigOfficial,
 	ThinkingAdapterEnabled:                false,
 	ThinkingAdapterBudgetTokensPercentage: 0.6,
 	FunctionCallThoughtSignatureEnabled:   true,
 	RemoveFunctionResponseIdEnabled:       true,
+}
+
+func ValidateGeminiImageGenerationConfigMode(value string) error {
+	switch strings.TrimSpace(value) {
+	case GeminiImageGenerationConfigOfficial, GeminiImageGenerationConfigLegacy:
+		return nil
+	default:
+		return fmt.Errorf("Gemini image generation config mode must be official or legacy")
+	}
 }
 
 // 全局实例

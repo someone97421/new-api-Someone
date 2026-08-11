@@ -3,6 +3,7 @@
 - 状态：已接受
 - 日期：2026-08-08
 - 决策者：项目维护者
+- 使用说明：[OpenAI 异步生图与双渠道故障转移使用说明](../async-image-failover-guide.md)
 
 ## 背景
 
@@ -82,7 +83,9 @@ pending -> delegated | settled | refunded | reconciliation_pending
 
 ## 配置
 
-初始实现提供以下环境变量：
+异步媒体选项可在“系统设置 → 模型设置 → 异步媒体”中持久化管理。对应环境变量继续作为首次启动默认值；已有数据库选项优先。存储目录和 Worker 数量在进程启动时确定，修改后需要重启全部实例。
+
+支持以下环境变量：
 
 | 变量 | 默认值 | 含义 |
 | --- | --- | --- |
@@ -94,6 +97,19 @@ pending -> delegated | settled | refunded | reconciliation_pending
 | `ASYNC_MEDIA_LEASE_SECONDS` | `300` | Worker 租约时间 |
 
 签名密钥复用部署的 `CRYPTO_SECRET`，避免增加另一份必须同步的多节点密钥。
+
+## Ease 兼容图片协议与渠道转换
+
+统一图片入口接受标准 OpenAI Images 字段以及 Ease-AI 扩展字段：`aspect_ratio`、`image_size`、`resolution`、`task_count`、`async`、`image/images`、`image_url/image_urls`。`task_count` 当前固定为 `1`，因为一个本站异步媒体任务只绑定一个上游任务 ID。
+
+渠道转换规则：
+
+- OpenAI/高级自定义鲸鱼渠道保留这些扩展字段，模型映射后提交到渠道配置的上游路径。
+- Gemini Imagine 渠道把比例、分辨率和参考图转换为 `generateContent`；官方模式使用 `generationConfig.responseFormat.image`，旧版兼容模式使用 `generationConfig.imageConfig`。
+- 鲸鱼查询响应中的 `result_urls`、`result_asset_urls` 和常见单数 URL 字段统一进入本站文件转存流程。
+- 查询响应明确进入失败终态时，本站任务同步失败，不再永久保持 `waiting_upstream`。
+
+渠道编辑器提供 Gemini 主渠道和鲸鱼备用渠道预设，用于自动填写公开模型、模型映射、优先级、提交路由和查询路径。密钥、Base URL 和分组仍由管理员确认。
 
 ## 后果
 

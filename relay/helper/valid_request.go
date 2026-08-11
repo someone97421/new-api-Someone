@@ -249,6 +249,9 @@ func GetAndValidOpenAIImageRequest(c *gin.Context, relayMode int) (*dto.ImageReq
 		if imageRequest.N != nil && *imageRequest.N > dto.MaxImageN {
 			return nil, fmt.Errorf("n must be an integer between 1 and %d", dto.MaxImageN)
 		}
+		if imageRequest.TaskCount != nil && *imageRequest.TaskCount != 1 {
+			return nil, errors.New("task_count must be 1 for unified async image routing")
+		}
 
 		// Not "256x256", "512x512", or "1024x1024"
 		if imageRequest.Model == "dall-e-2" || imageRequest.Model == "dall-e" {

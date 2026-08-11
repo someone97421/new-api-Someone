@@ -62,6 +62,14 @@ web/           — Frontend (React 19, Rsbuild, Base UI, Tailwind)
 - A separate function is appropriate when it represents reusable behavior, a required interface/framework callback, an exported API, a test fixture, or complex business logic that deserves direct tests.
 - If a single-use helper is kept, its name must describe a durable domain concept rather than a mechanical step extracted only to shorten the caller.
 
+### Feature Documentation
+
+- Every new user-visible feature or materially changed workflow MUST update or add a Chinese usage document under `docs/` in the same change. Do not consider the feature complete when only code or UI has been added.
+- The document MUST explain: the feature purpose, the problem it solves, the intended users, where to configure it, a beginner-friendly step-by-step procedure, defaults and effective boundaries, at least one request/configuration example, the core operating principle in plain language, failure/failover semantics, and common troubleshooting steps.
+- If the feature changes architecture, protocol conversion, persistence, billing, routing, security, or lifecycle semantics, update the relevant ADR under `docs/adr/` as well.
+- UI labels and tooltips are not a substitute for documentation. Link the detailed guide from the ADR or related existing guide, and keep names, paths, defaults, and examples consistent with the actual implementation.
+- When handing the change to a user who may not know the project internals, briefly explain the principle and any required operational action (such as restart, migration, shared storage, retry policy, or security risk) instead of only listing modified files.
+
 ### Backend Rules
 
 **relaykit module independence:** The `relaykit/` Go module MUST remain independently buildable.

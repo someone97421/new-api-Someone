@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/console_setting"
 	"github.com/QuantumNous/new-api/setting/model_setting"
@@ -41,6 +42,34 @@ func isPositiveOptionValue(value string) bool {
 	}
 	floatValue, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
 	return err == nil && floatValue > 0
+}
+
+func validateBoundedIntegerOption(name string, value string, minValue int, maxValue int) error {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || parsed < minValue || parsed > maxValue {
+		return fmt.Errorf("%s must be an integer between %d and %d", name, minValue, maxValue)
+	}
+	return nil
+}
+
+func validateAsyncMediaOption(key string, value string) error {
+	switch key {
+	case "AsyncMediaStoragePath":
+		_, err := service.ValidateAsyncMediaStoragePath(value)
+		return err
+	case "AsyncMediaRetentionHours":
+		return validateBoundedIntegerOption(key, value, 1, 8760)
+	case "AsyncMediaWorkers":
+		return validateBoundedIntegerOption(key, value, 1, 128)
+	case "AsyncMediaMaxFileMB":
+		return validateBoundedIntegerOption(key, value, 1, 10240)
+	case "AsyncMediaLeaseSeconds":
+		return validateBoundedIntegerOption(key, value, 30, 3600)
+	case "TaskTimeoutMinutes":
+		return validateBoundedIntegerOption(key, value, 0, 525600)
+	default:
+		return nil
+	}
 }
 
 func collectModelNamesFromOptionValue(raw string, modelNames map[string]struct{}) {
@@ -238,6 +267,36 @@ func UpdateOption(c *gin.Context) {
 		}
 	case "gemini.safety_settings":
 		err = model_setting.ValidateGeminiSafetySettings(option.Value.(string))
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	case "gemini.image_generation_config_mode":
+		err = model_setting.ValidateGeminiImageGenerationConfigMode(option.Value.(string))
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	case "AsyncMediaStoragePath", "AsyncMediaRetentionHours", "AsyncMediaWorkers", "AsyncMediaMaxFileMB", "AsyncMediaLeaseSeconds", "TaskTimeoutMinutes":
+		if option.Key == "AsyncMediaStoragePath" {
+			option.Value = strings.TrimSpace(option.Value.(string))
+		}
+		err = validateAsyncMediaOption(option.Key, option.Value.(string))
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	case "RetryTimes":
+		err = validateBoundedIntegerOption(option.Key, option.Value.(string), 0, 10)
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
