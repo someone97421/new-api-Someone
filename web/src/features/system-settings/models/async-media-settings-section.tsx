@@ -90,10 +90,10 @@ export function AsyncMediaSettingsSection(
           </Alert>
 
           <Alert>
-            <AlertTitle>{t('Beginner banana routing setup')}</AlertTitle>
+            <AlertTitle>{t('Beginner protocol bridge setup')}</AlertTitle>
             <AlertDescription>
               {t(
-                'Create a Gemini channel and an Advanced Custom channel, then use their banana preset buttons. Keep both channels in the same group and expose nano-banana-2. This page controls the shared async queue and failover attempts.'
+                'Create Gemini2GPT and GPT2Gemini channels, keep channels for the same public model in one group, and use priority to choose the primary route. This page controls the shared async queue and failover attempts.'
               )}
             </AlertDescription>
           </Alert>

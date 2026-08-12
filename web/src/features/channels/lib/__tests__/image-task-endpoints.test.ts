@@ -44,6 +44,7 @@ const configuredEndpoint = {
     ],
   }),
   image_task_query_path: '/v1/image/generations/{task_id}',
+  image_task_submit_path: '/v1/image/generations',
 }
 
 describe('image task endpoint override', () => {
@@ -52,6 +53,7 @@ describe('image task endpoint override', () => {
     const settings = JSON.parse(String(payload.channel.settings))
 
     assert.deepEqual(settings.image_task_endpoints, {
+      submit_path: '/v1/image/generations',
       query_path: '/v1/image/generations/{task_id}',
     })
 
@@ -73,6 +75,7 @@ describe('image task endpoint override', () => {
       restored.image_task_query_path,
       '/v1/image/generations/{task_id}'
     )
+    assert.equal(restored.image_task_submit_path, '/v1/image/generations')
   })
 
   test('rejects unsafe or incomplete image task query paths', () => {

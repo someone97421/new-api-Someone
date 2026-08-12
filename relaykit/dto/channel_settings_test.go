@@ -59,6 +59,19 @@ func TestAdvancedCustomValidateResponsesToChatConverterPath(t *testing.T) {
 	}
 }
 
+func TestProtocolBridgeConfigValidate(t *testing.T) {
+	require.NoError(t, (&ProtocolBridgeConfig{
+		PassthroughFields: []string{"seed", "metadata.vendor_flag"},
+		FieldMappings: map[string]string{
+			"aspect_ratio": "generationConfig.responseFormat.image.aspectRatio",
+		},
+	}).Validate())
+
+	err := (&ProtocolBridgeConfig{FieldMappings: map[string]string{"token": "authorization"}}).Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "protected")
+}
+
 func TestAdvancedCustomValidateModelListRouteConstraints(t *testing.T) {
 	valid := &AdvancedCustomConfig{
 		Routes: []AdvancedCustomRoute{

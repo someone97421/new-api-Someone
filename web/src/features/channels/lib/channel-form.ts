@@ -20,6 +20,8 @@ import { z } from 'zod'
 
 import {
   CHANNEL_TYPE_NEW_API,
+  CHANNEL_TYPE_GEMINI_TO_GPT,
+  CHANNEL_TYPE_GPT_TO_GEMINI,
   CHANNEL_STATUS,
   ERROR_MESSAGES,
   MODEL_FETCHABLE_TYPES,
@@ -285,13 +287,25 @@ export const channelFormSchema = z
     video_task_content_path: z.string().optional(),
     video_task_remix_path: z.string().optional(),
     image_task_query_path: z.string().optional(),
+    image_task_submit_path: z.string().optional(),
+    protocol_bridge_passthrough_fields: z.string().optional(),
+    protocol_bridge_field_mappings: z
+      .string()
+      .optional()
+      .refine(
+        isOptionalModelMapping,
+        'Field mappings must be a JSON object with string values'
+      ),
     // Upstream model update settings (stored in settings JSON)
     upstream_model_update_check_enabled: z.boolean().optional(),
     upstream_model_update_auto_sync_enabled: z.boolean().optional(),
     upstream_model_update_ignored_models: z.string().optional(),
   })
   .superRefine((data, ctx) => {
-    const supportsVideoTaskEndpoints = data.type === 1 || data.type === 55
+    const supportsVideoTaskEndpoints =
+      data.type === 1 ||
+      data.type === 55 ||
+      data.type === CHANNEL_TYPE_GEMINI_TO_GPT
     if (supportsVideoTaskEndpoints) {
       if (!isRelativeTaskPath(data.video_task_submit_path || '')) {
         addRequiredIssue(
@@ -344,8 +358,24 @@ export const channelFormSchema = z
       }
     }
     const supportsImageTaskEndpoints =
-      data.type === 1 || data.type === CHANNEL_TYPE_ADVANCED_CUSTOM
+      data.type === 1 ||
+      data.type === CHANNEL_TYPE_ADVANCED_CUSTOM ||
+      data.type === CHANNEL_TYPE_GEMINI_TO_GPT
     if (supportsImageTaskEndpoints) {
+      const submitPath = (data.image_task_submit_path || '').trim()
+      if (!isRelativeTaskPath(submitPath)) {
+        addRequiredIssue(
+          ctx,
+          'image_task_submit_path',
+          'Image task endpoint must be a relative path starting with /'
+        )
+      } else if (submitPath.includes('{task_id}')) {
+        addRequiredIssue(
+          ctx,
+          'image_task_submit_path',
+          'Image task submit path must not contain {task_id}'
+        )
+      }
       const queryPath = (data.image_task_query_path || '').trim()
       if (!isRelativeTaskPath(queryPath)) {
         addRequiredIssue(
@@ -362,7 +392,15 @@ export const channelFormSchema = z
       }
     }
     if (
-      [3, 8, 36, 45, CHANNEL_TYPE_NEW_API].includes(data.type) &&
+      [
+        3,
+        8,
+        36,
+        45,
+        CHANNEL_TYPE_NEW_API,
+        CHANNEL_TYPE_GEMINI_TO_GPT,
+        CHANNEL_TYPE_GPT_TO_GEMINI,
+      ].includes(data.type) &&
       !data.base_url?.trim()
     ) {
       addRequiredIssue(
@@ -532,6 +570,9 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   video_task_content_path: '',
   video_task_remix_path: '',
   image_task_query_path: '',
+  image_task_submit_path: '',
+  protocol_bridge_passthrough_fields: '',
+  protocol_bridge_field_mappings: '',
   upstream_model_update_check_enabled: false,
   upstream_model_update_auto_sync_enabled: false,
   upstream_model_update_ignored_models: '',
@@ -605,6 +646,9 @@ export function transformChannelToFormDefaults(
   let videoTaskContentPath = ''
   let videoTaskRemixPath = ''
   let imageTaskQueryPath = ''
+  let imageTaskSubmitPath = ''
+  let protocolBridgePassthroughFields = ''
+  let protocolBridgeFieldMappings = ''
 
   if (channel.settings) {
     try {
@@ -638,6 +682,15 @@ export function transformChannelToFormDefaults(
       videoTaskContentPath = parsed.video_task_endpoints?.content_path || ''
       videoTaskRemixPath = parsed.video_task_endpoints?.remix_path || ''
       imageTaskQueryPath = parsed.image_task_endpoints?.query_path || ''
+      imageTaskSubmitPath = parsed.image_task_endpoints?.submit_path || ''
+      protocolBridgePassthroughFields = Array.isArray(
+        parsed.protocol_bridge?.passthrough_fields
+      )
+        ? parsed.protocol_bridge.passthrough_fields.join('\n')
+        : ''
+      protocolBridgeFieldMappings = parsed.protocol_bridge?.field_mappings
+        ? JSON.stringify(parsed.protocol_bridge.field_mappings, null, 2)
+        : ''
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error('Failed to parse channel settings:', error)
@@ -694,6 +747,9 @@ export function transformChannelToFormDefaults(
     video_task_content_path: videoTaskContentPath,
     video_task_remix_path: videoTaskRemixPath,
     image_task_query_path: imageTaskQueryPath,
+    image_task_submit_path: imageTaskSubmitPath,
+    protocol_bridge_passthrough_fields: protocolBridgePassthroughFields,
+    protocol_bridge_field_mappings: protocolBridgeFieldMappings,
   }
 }
 
@@ -818,7 +874,11 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
   settingsObj.disable_task_polling_sleep =
     formData.disable_task_polling_sleep === true
 
-  if (formData.type === 1 || formData.type === 55) {
+  if (
+    formData.type === 1 ||
+    formData.type === 55 ||
+    formData.type === CHANNEL_TYPE_GEMINI_TO_GPT
+  ) {
     const submitPath = formData.video_task_submit_path?.trim() || ''
     const queryPath = formData.video_task_query_path?.trim() || ''
     const contentPath = formData.video_task_content_path?.trim() || ''
@@ -837,15 +897,51 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     delete settingsObj.video_task_endpoints
   }
 
-  if (formData.type === 1 || formData.type === CHANNEL_TYPE_ADVANCED_CUSTOM) {
+  if (
+    formData.type === 1 ||
+    formData.type === CHANNEL_TYPE_ADVANCED_CUSTOM ||
+    formData.type === CHANNEL_TYPE_GEMINI_TO_GPT
+  ) {
     const queryPath = formData.image_task_query_path?.trim() || ''
-    if (queryPath) {
-      settingsObj.image_task_endpoints = { query_path: queryPath }
+    const submitPath = formData.image_task_submit_path?.trim() || ''
+    if (queryPath || submitPath) {
+      settingsObj.image_task_endpoints = {
+        ...(submitPath ? { submit_path: submitPath } : {}),
+        ...(queryPath ? { query_path: queryPath } : {}),
+      }
     } else {
       delete settingsObj.image_task_endpoints
     }
   } else {
     delete settingsObj.image_task_endpoints
+  }
+
+  if (
+    formData.type === CHANNEL_TYPE_GEMINI_TO_GPT ||
+    formData.type === CHANNEL_TYPE_GPT_TO_GEMINI
+  ) {
+    const passthroughFields = [
+      ...new Set(
+        String(formData.protocol_bridge_passthrough_fields || '')
+          .split(/[\n,]/)
+          .map((field) => field.trim())
+          .filter(Boolean)
+      ),
+    ]
+    let fieldMappings: Record<string, string> = {}
+    if (formData.protocol_bridge_field_mappings?.trim()) {
+      fieldMappings = JSON.parse(formData.protocol_bridge_field_mappings)
+    }
+    if (passthroughFields.length > 0 || Object.keys(fieldMappings).length > 0) {
+      settingsObj.protocol_bridge = {
+        passthrough_fields: passthroughFields,
+        field_mappings: fieldMappings,
+      }
+    } else {
+      delete settingsObj.protocol_bridge
+    }
+  } else {
+    delete settingsObj.protocol_bridge
   }
 
   // Upstream model update settings (for model-fetchable channel types)

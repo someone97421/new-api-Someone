@@ -139,6 +139,7 @@ func convertGeminiNativeImageRequest(request dto.ImageRequest, info *relaycommon
 	}
 	generationConfig := dto.GeminiChatGenerationConfig{
 		ResponseModalities: []string{"TEXT", "IMAGE"},
+		Seed:               request.Seed,
 	}
 	if model_setting.GetGeminiSettings().ImageGenerationConfigMode == model_setting.GeminiImageGenerationConfigLegacy {
 		legacyImageConfig, err := common.Marshal(imageConfig)

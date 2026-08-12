@@ -145,6 +145,8 @@ import {
   FIELD_DESCRIPTIONS,
   FIELD_PLACEHOLDERS,
   MODEL_FETCHABLE_TYPES,
+  CHANNEL_TYPE_GEMINI_TO_GPT,
+  CHANNEL_TYPE_GPT_TO_GEMINI,
 } from '../../constants'
 import { useChannelMutateForm } from '../../hooks/use-channel-mutate-form'
 import {
@@ -166,8 +168,6 @@ import {
   findMissingModelsInMapping,
   validateModelMappingJson,
   hasAdvancedSettingsErrors,
-  getGeminiBananaChannelPreset,
-  getWhaleBananaChannelPreset,
 } from '../../lib'
 import {
   collectInvalidStatusCodeEntries,
@@ -304,6 +304,9 @@ const SENSITIVE_FORM_FIELDS = [
   'video_task_content_path',
   'video_task_remix_path',
   'image_task_query_path',
+  'image_task_submit_path',
+  'protocol_bridge_passthrough_fields',
+  'protocol_bridge_field_mappings',
   'upstream_model_update_check_enabled',
   'upstream_model_update_auto_sync_enabled',
   'upstream_model_update_ignored_models',
@@ -1520,47 +1523,6 @@ export function ChannelMutateDrawer({
     form.setValue('models', '')
     toast.success(t('Cleared all models'))
   }, [form, t])
-
-  const handleApplyBananaRoutingPreset = useCallback(() => {
-    const preset =
-      currentType === 24
-        ? getGeminiBananaChannelPreset()
-        : getWhaleBananaChannelPreset()
-
-    const presetModels =
-      currentType === 24
-        ? [...currentModelsArray, ...preset.models]
-        : preset.models
-    form.setValue('models', formatModelsArray(presetModels), {
-      shouldDirty: true,
-      shouldValidate: true,
-    })
-    form.setValue('model_mapping', preset.modelMapping, {
-      shouldDirty: true,
-      shouldValidate: true,
-    })
-    form.setValue('priority', preset.priority, {
-      shouldDirty: true,
-      shouldValidate: true,
-    })
-    form.setValue('test_model', preset.testModel, {
-      shouldDirty: true,
-      shouldValidate: true,
-    })
-    if (preset.advancedCustom !== undefined) {
-      form.setValue('advanced_custom', preset.advancedCustom, {
-        shouldDirty: true,
-        shouldValidate: true,
-      })
-    }
-    if (preset.imageTaskQueryPath !== undefined) {
-      form.setValue('image_task_query_path', preset.imageTaskQueryPath, {
-        shouldDirty: true,
-        shouldValidate: true,
-      })
-    }
-    toast.success(t('Banana routing preset applied'))
-  }, [currentModelsArray, currentType, form, t])
 
   const handleCopyModels = useCallback(async () => {
     const models = form.getValues('models')
@@ -3308,36 +3270,6 @@ export function ChannelMutateDrawer({
                     >
                       <ChannelModelsSection>
                         <div className='space-y-5'>
-                          {(currentType === 24 ||
-                            currentType === CHANNEL_TYPE_ADVANCED_CUSTOM) && (
-                            <Alert>
-                              <AlertDescription className='flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between'>
-                                <span>
-                                  {currentType === 24
-                                    ? t(
-                                        'Use the Gemini banana preset to expose nano-banana-2 and map it to the official Gemini image model with primary priority.'
-                                      )
-                                    : t(
-                                        'Use the Whale banana preset to fill the async submit path, polling path, public model, and backup priority.'
-                                      )}
-                                </span>
-                                <Button
-                                  type='button'
-                                  variant='outline'
-                                  size='sm'
-                                  onClick={handleApplyBananaRoutingPreset}
-                                >
-                                  <Wand2
-                                    className='mr-2 h-4 w-4'
-                                    aria-hidden='true'
-                                  />
-                                  {currentType === 24
-                                    ? t('Apply Gemini banana preset')
-                                    : t('Apply Whale banana preset')}
-                                </Button>
-                              </AlertDescription>
-                            </Alert>
-                          )}
                           <div className='border-border/60 bg-muted/10 rounded-lg border p-4'>
                             <FormField
                               control={form.control}
@@ -4257,7 +4189,9 @@ export function ChannelMutateDrawer({
                                 )}
                               />
 
-                              {(currentType === 1 || currentType === 55) && (
+                              {(currentType === 1 ||
+                                currentType === 55 ||
+                                currentType === CHANNEL_TYPE_GEMINI_TO_GPT) && (
                                 <div className='space-y-4 px-4 py-4'>
                                   <div className='space-y-1'>
                                     <div className='text-sm font-medium'>
@@ -4368,7 +4302,9 @@ export function ChannelMutateDrawer({
                                 </div>
                               )}
 
-                              {(currentType === 1 || currentType === 58) && (
+                              {(currentType === 1 ||
+                                currentType === 58 ||
+                                currentType === CHANNEL_TYPE_GEMINI_TO_GPT) && (
                                 <div className='space-y-4 px-4 py-4'>
                                   <div className='space-y-1'>
                                     <div className='text-sm font-medium'>
@@ -4380,6 +4316,30 @@ export function ChannelMutateDrawer({
                                       )}
                                     </p>
                                   </div>
+                                  <FormField
+                                    control={form.control}
+                                    name='image_task_submit_path'
+                                    render={({ field }) => (
+                                      <FormItem>
+                                        <FormLabel>
+                                          {t('Image task submit path')}
+                                        </FormLabel>
+                                        <FormControl>
+                                          <Input
+                                            placeholder='/v1/images/generations'
+                                            className='font-mono'
+                                            {...field}
+                                          />
+                                        </FormControl>
+                                        <FormDescription>
+                                          {t(
+                                            'Leave blank to use /v1/images/generations. Use this when an OpenAI-compatible upstream uses a singular or vendor-specific image path.'
+                                          )}
+                                        </FormDescription>
+                                        <FormMessage />
+                                      </FormItem>
+                                    )}
+                                  />
                                   <FormField
                                     control={form.control}
                                     name='image_task_query_path'
@@ -4398,6 +4358,76 @@ export function ChannelMutateDrawer({
                                         <FormDescription>
                                           {t(
                                             'Clients query /v1/images/generations/{task_id}?model={model}. The upstream path must contain {task_id} exactly once.'
+                                          )}
+                                        </FormDescription>
+                                        <FormMessage />
+                                      </FormItem>
+                                    )}
+                                  />
+                                </div>
+                              )}
+
+                              {(currentType === CHANNEL_TYPE_GEMINI_TO_GPT ||
+                                currentType === CHANNEL_TYPE_GPT_TO_GEMINI) && (
+                                <div className='space-y-5 px-4 py-4'>
+                                  <Alert>
+                                    <AlertDescription>
+                                      {currentType ===
+                                      CHANNEL_TYPE_GEMINI_TO_GPT
+                                        ? t(
+                                            'Accept Gemini requests and call an OpenAI-compatible upstream. Responses are converted back to Gemini format.'
+                                          )
+                                        : t(
+                                            'Accept OpenAI requests and call a Gemini upstream. Responses are converted back to OpenAI format.'
+                                          )}
+                                    </AlertDescription>
+                                  </Alert>
+                                  <FormField
+                                    control={form.control}
+                                    name='protocol_bridge_passthrough_fields'
+                                    render={({ field }) => (
+                                      <FormItem>
+                                        <FormLabel>
+                                          {t('Custom passthrough fields')}
+                                        </FormLabel>
+                                        <FormControl>
+                                          <Textarea
+                                            className='min-h-32 font-mono text-xs'
+                                            placeholder={
+                                              'seed\nnegative_prompt\nmetadata.vendor_option'
+                                            }
+                                            {...field}
+                                          />
+                                        </FormControl>
+                                        <FormDescription>
+                                          {t(
+                                            'One JSON path per line. Existing values, including 0 and false, are copied after the built-in conversion.'
+                                          )}
+                                        </FormDescription>
+                                        <FormMessage />
+                                      </FormItem>
+                                    )}
+                                  />
+                                  <FormField
+                                    control={form.control}
+                                    name='protocol_bridge_field_mappings'
+                                    render={({ field }) => (
+                                      <FormItem>
+                                        <FormLabel>
+                                          {t('Custom field replacements')}
+                                        </FormLabel>
+                                        <FormControl>
+                                          <Textarea
+                                            className='min-h-40 font-mono text-xs'
+                                            placeholder={
+                                              '{\n  "aspect_ratio": "generationConfig.responseFormat.image.aspectRatio",\n  "duration": "parameters.durationSeconds"\n}'
+                                            }
+                                            {...field}
+                                          />
+                                        </FormControl>
+                                        <FormDescription>
+                                          {t(
+                                            'Enter a JSON object: each source request path maps to an upstream request path. Custom mappings override built-in converted values.'
                                           )}
                                         </FormDescription>
                                         <FormMessage />

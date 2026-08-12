@@ -111,9 +111,16 @@ export interface ChannelOtherSettings {
   advanced_custom?: AdvancedCustomConfig
   video_task_endpoints?: VideoTaskEndpoints
   image_task_endpoints?: ImageTaskEndpoints
+  protocol_bridge?: ProtocolBridgeConfig
+}
+
+export interface ProtocolBridgeConfig {
+  passthrough_fields?: string[]
+  field_mappings?: Record<string, string>
 }
 
 export interface ImageTaskEndpoints {
+  submit_path?: string
   query_path?: string
 }
 

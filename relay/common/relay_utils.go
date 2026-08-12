@@ -164,12 +164,24 @@ func validateMultipartTaskRequest(c *gin.Context, info *RelayInfo, action string
 
 	formData := c.Request.PostForm
 	req = TaskSubmitReq{
-		Prompt:   formData.Get("prompt"),
-		Model:    formData.Get("model"),
-		Mode:     formData.Get("mode"),
-		Image:    formData.Get("image"),
-		Size:     formData.Get("size"),
-		Metadata: make(map[string]interface{}),
+		Prompt:      formData.Get("prompt"),
+		Model:       formData.Get("model"),
+		Mode:        formData.Get("mode"),
+		Image:       formData.Get("image"),
+		Size:        formData.Get("size"),
+		AspectRatio: formData.Get("aspect_ratio"),
+		Resolution:  formData.Get("resolution"),
+		Metadata:    make(map[string]interface{}),
+	}
+	if seedText := formData.Get("seed"); seedText != "" {
+		if seed, err := strconv.ParseInt(seedText, 10, 64); err == nil {
+			req.Seed = &seed
+		}
+	}
+	if audioText := formData.Get("generate_audio"); audioText != "" {
+		if generateAudio, err := strconv.ParseBool(audioText); err == nil {
+			req.GenerateAudio = &generateAudio
+		}
 	}
 
 	if durationStr := formData.Get("seconds"); durationStr != "" {
@@ -275,6 +287,14 @@ func isKnownTaskField(field string) bool {
 		"images":          true,
 		"size":            true,
 		"duration":        true,
+		"seconds":         true,
+		"aspect_ratio":    true,
+		"resolution":      true,
+		"seed":            true,
+		"generate_audio":  true,
+		"task_count":      true,
+		"references":      true,
+		"extra":           true,
 		"input_reference": true, // Sora 特有字段
 	}
 	return knownFields[field]
@@ -301,6 +321,12 @@ func ValidateBasicTaskRequest(c *gin.Context, info *RelayInfo, action string) *d
 
 	if taskErr := validateTaskDurationBounds(req); taskErr != nil {
 		return taskErr
+	}
+	if req.TaskCount != nil && (*req.TaskCount == 0 || *req.TaskCount > 10) {
+		return createTaskError(fmt.Errorf("task_count must be between 1 and 10"), "invalid_request", http.StatusBadRequest, true)
+	}
+	if req.Seed != nil && (*req.Seed < -1 || *req.Seed > 4294967295) {
+		return createTaskError(fmt.Errorf("seed must be between -1 and 4294967295"), "invalid_request", http.StatusBadRequest, true)
 	}
 
 	if len(req.Images) == 0 && strings.TrimSpace(req.Image) != "" {

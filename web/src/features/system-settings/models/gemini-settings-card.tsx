@@ -261,7 +261,7 @@ export function GeminiSettingsCard({ defaultValues }: GeminiSettingsCardProps) {
             isSaving={updateOption.isPending}
           />
           <Alert>
-            <AlertTitle>{t('Ease-compatible Gemini images')}</AlertTitle>
+            <AlertTitle>{t('OpenAI-compatible Gemini images')}</AlertTitle>
             <AlertDescription>
               {t(
                 'OpenAI-style image requests are converted to Gemini generateContent. Aspect ratio, resolution, and reference images are translated automatically.'

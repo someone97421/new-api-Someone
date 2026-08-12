@@ -348,6 +348,8 @@ var streamSupportedChannels = map[int]bool{
 	constant.ChannelTypeSub2API:        true,
 	constant.ChannelTypeNewAPI:         true,
 	constant.ChannelTypeTencent:        true,
+	constant.ChannelTypeGemini2GPT:     true,
+	constant.ChannelTypeGPT2Gemini:     true,
 }
 
 func GenRelayInfoWs(c *gin.Context, ws *websocket.Conn) *RelayInfo {
@@ -836,16 +838,23 @@ type TaskRelayInfo struct {
 }
 
 type TaskSubmitReq struct {
-	Prompt         string                 `json:"prompt"`
-	Model          string                 `json:"model,omitempty"`
-	Mode           string                 `json:"mode,omitempty"`
-	Image          string                 `json:"image,omitempty"`
-	Images         []string               `json:"images,omitempty"`
-	Size           string                 `json:"size,omitempty"`
-	Duration       int                    `json:"duration,omitempty"`
-	Seconds        string                 `json:"seconds,omitempty"`
-	InputReference string                 `json:"input_reference,omitempty"`
-	Metadata       map[string]interface{} `json:"metadata,omitempty"`
+	Prompt         string                   `json:"prompt"`
+	Model          string                   `json:"model,omitempty"`
+	Mode           string                   `json:"mode,omitempty"`
+	Image          string                   `json:"image,omitempty"`
+	Images         []string                 `json:"images,omitempty"`
+	Size           string                   `json:"size,omitempty"`
+	Duration       int                      `json:"duration,omitempty"`
+	Seconds        string                   `json:"seconds,omitempty"`
+	InputReference string                   `json:"input_reference,omitempty"`
+	Metadata       map[string]interface{}   `json:"metadata,omitempty"`
+	AspectRatio    string                   `json:"aspect_ratio,omitempty"`
+	Resolution     string                   `json:"resolution,omitempty"`
+	TaskCount      *uint                    `json:"task_count,omitempty"`
+	GenerateAudio  *bool                    `json:"generate_audio,omitempty"`
+	Seed           *int64                   `json:"seed,omitempty"`
+	References     []map[string]interface{} `json:"references,omitempty"`
+	Extra          map[string]interface{}   `json:"extra,omitempty"`
 }
 
 func (t *TaskSubmitReq) GetPrompt() string {
@@ -890,7 +899,6 @@ func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 			var metadataObj map[string]interface{}
 			if err := common.Unmarshal([]byte(metadataStr), &metadataObj); err == nil {
 				t.Metadata = metadataObj
-				return nil
 			}
 		}
 
@@ -898,6 +906,27 @@ func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 		if err := common.Unmarshal(aux.Metadata, &metadataObj); err == nil {
 			t.Metadata = metadataObj
 		}
+	}
+	if t.Metadata == nil {
+		t.Metadata = make(map[string]interface{})
+	}
+	if t.AspectRatio != "" {
+		t.Metadata["aspectRatio"] = t.AspectRatio
+	}
+	if t.Resolution != "" {
+		t.Metadata["resolution"] = t.Resolution
+	}
+	if t.Seed != nil {
+		t.Metadata["seed"] = *t.Seed
+	}
+	if t.GenerateAudio != nil {
+		t.Metadata["generateAudio"] = *t.GenerateAudio
+	}
+	if len(t.References) > 0 {
+		t.Metadata["references"] = t.References
+	}
+	if len(t.Extra) > 0 {
+		t.Metadata["extra"] = t.Extra
 	}
 
 	return nil

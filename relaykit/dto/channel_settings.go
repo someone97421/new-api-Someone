@@ -87,6 +87,55 @@ type ChannelOtherSettings struct {
 	AdvancedCustom                        *AdvancedCustomConfig `json:"advanced_custom,omitempty"`
 	VideoTaskEndpoints                    *VideoTaskEndpoints   `json:"video_task_endpoints,omitempty"`
 	ImageTaskEndpoints                    *ImageTaskEndpoints   `json:"image_task_endpoints,omitempty"`
+	ProtocolBridge                        *ProtocolBridgeConfig `json:"protocol_bridge,omitempty"`
+}
+
+// ProtocolBridgeConfig extends the built-in Gemini/OpenAI protocol conversion.
+// Paths use gjson/sjson dot notation. Passthrough keeps the same path, while
+// FieldMappings copies a source request path to a different upstream path.
+type ProtocolBridgeConfig struct {
+	PassthroughFields []string          `json:"passthrough_fields,omitempty"`
+	FieldMappings     map[string]string `json:"field_mappings,omitempty"`
+}
+
+func (c *ProtocolBridgeConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if len(c.PassthroughFields) > 128 || len(c.FieldMappings) > 128 {
+		return fmt.Errorf("protocol_bridge supports at most 128 passthrough fields and 128 field mappings")
+	}
+	for _, path := range c.PassthroughFields {
+		if err := validateProtocolBridgePath("passthrough field", path, false); err != nil {
+			return err
+		}
+	}
+	for source, target := range c.FieldMappings {
+		if err := validateProtocolBridgePath("mapping source", source, false); err != nil {
+			return err
+		}
+		if err := validateProtocolBridgePath("mapping target", target, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var protocolBridgePathPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$`)
+
+func validateProtocolBridgePath(field string, path string, target bool) error {
+	path = strings.TrimSpace(path)
+	if path == "" || len(path) > 256 || !protocolBridgePathPattern.MatchString(path) {
+		return fmt.Errorf("protocol_bridge %s is invalid: %s", field, path)
+	}
+	if target {
+		root := strings.ToLower(strings.Split(path, ".")[0])
+		switch root {
+		case "authorization", "api_key", "apikey", "access_token", "base_url", "url":
+			return fmt.Errorf("protocol_bridge mapping target is protected: %s", path)
+		}
+	}
+	return nil
 }
 
 const OpenAIImageTaskQueryPathPrefix = "/v1/images/generations/"
@@ -95,11 +144,23 @@ const OpenAIImageTaskQueryPathPrefix = "/v1/images/generations/"
 // asynchronous image task. The public gateway endpoint remains OpenAI-style;
 // only the upstream path varies by provider.
 type ImageTaskEndpoints struct {
-	QueryPath string `json:"query_path,omitempty"`
+	SubmitPath string `json:"submit_path,omitempty"`
+	QueryPath  string `json:"query_path,omitempty"`
 }
 
 func (e *ImageTaskEndpoints) Validate() error {
-	if e == nil || strings.TrimSpace(e.QueryPath) == "" {
+	if e == nil {
+		return nil
+	}
+	if strings.TrimSpace(e.SubmitPath) != "" {
+		if err := validateRelativeTaskEndpoint("image_task_endpoints.submit_path", e.SubmitPath); err != nil {
+			return err
+		}
+		if strings.Contains(e.SubmitPath, "{task_id}") {
+			return fmt.Errorf("image_task_endpoints.submit_path must not contain {task_id}")
+		}
+	}
+	if strings.TrimSpace(e.QueryPath) == "" {
 		return nil
 	}
 	if err := validateRelativeTaskEndpoint("image_task_endpoints.query_path", e.QueryPath); err != nil {

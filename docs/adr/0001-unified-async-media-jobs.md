@@ -98,18 +98,20 @@ pending -> delegated | settled | refunded | reconciliation_pending
 
 签名密钥复用部署的 `CRYPTO_SECRET`，避免增加另一份必须同步的多节点密钥。
 
-## Ease 兼容图片协议与渠道转换
+## 通用协议桥与媒体字段转换
 
-统一图片入口接受标准 OpenAI Images 字段以及 Ease-AI 扩展字段：`aspect_ratio`、`image_size`、`resolution`、`task_count`、`async`、`image/images`、`image_url/image_urls`。`task_count` 当前固定为 `1`，因为一个本站异步媒体任务只绑定一个上游任务 ID。
+新增 `Gemini2GPT` 与 `GPT2Gemini` 两个一级渠道类型。共享协议桥负责请求和响应方向，已有 OpenAI、Gemini、Imagen、Veo 与 Sora 适配器负责具体协议语义，避免再为单个供应商写固定模型和路径预设。
 
 渠道转换规则：
 
-- OpenAI/高级自定义鲸鱼渠道保留这些扩展字段，模型映射后提交到渠道配置的上游路径。
-- Gemini Imagine 渠道把比例、分辨率和参考图转换为 `generateContent`；官方模式使用 `generationConfig.responseFormat.image`，旧版兼容模式使用 `generationConfig.imageConfig`。
-- 鲸鱼查询响应中的 `result_urls`、`result_asset_urls` 和常见单数 URL 字段统一进入本站文件转存流程。
+- 图片内置处理比例、分辨率、数量、异步标志、seed、负面提示、水印与多种参考图输入；Gemini 官方模式使用 `generationConfig.responseFormat.image`，旧版兼容模式使用 `generationConfig.imageConfig`。
+- 视频内置处理 duration/seconds、aspect_ratio、resolution、mode、task_count、generate_audio、seed、references、metadata 与 extra。
+- 渠道设置中的自定义字段映射和透传在内置转换后执行，保留显式 `0` 与 `false`；敏感目标路径被拒绝。
+- OpenAI 兼容图片和视频渠道可分别覆盖提交、查询、内容与 remix 路径。
+- 常见异步响应 URL 字段继续统一进入本站文件转存流程。
 - 查询响应明确进入失败终态时，本站任务同步失败，不再永久保持 `waiting_upstream`。
 
-渠道编辑器提供 Gemini 主渠道和鲸鱼备用渠道预设，用于自动填写公开模型、模型映射、优先级、提交路由和查询路径。密钥、Base URL 和分组仍由管理员确认。
+渠道编辑器直接提供两个协议桥类型和可视化配置区。详细使用方法见 `docs/protocol-bridge-channel-guide.md`。
 
 ## 后果
 

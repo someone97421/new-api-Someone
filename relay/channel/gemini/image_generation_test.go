@@ -46,7 +46,7 @@ func TestConvertImageRequestToGeminiNativeImageGeneration(t *testing.T) {
 	assert.Empty(t, request.GenerationConfig.ImageConfig)
 }
 
-func TestConvertEaseCompatibleImageRequestToGeminiNativeImageGeneration(t *testing.T) {
+func TestConvertExtendedOpenAIImageRequestToGeminiNativeImageGeneration(t *testing.T) {
 	info := &relaycommon.RelayInfo{
 		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gemini-3.1-flash-image"},
 	}

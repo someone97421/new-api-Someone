@@ -85,6 +85,13 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 			instance.Image = parsed
 			info.Action = constant.TaskActionGenerate
 		}
+	} else if reference := firstGeminiImageReference(req.References); reference != "" {
+		mimeType, data, loadErr := loadGeminiTaskImageReference(reference)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		instance.Image = &VeoImageInput{MimeType: mimeType, BytesBase64Encoded: data}
+		info.Action = constant.TaskActionGenerate
 	}
 
 	params := &VeoParameters{}
@@ -100,6 +107,19 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	if params.AspectRatio == "" && req.Size != "" {
 		params.AspectRatio = SizeToVeoAspectRatio(req.Size)
 	}
+	if params.AspectRatio == "" {
+		params.AspectRatio = req.AspectRatio
+	}
+	if params.Resolution == "" {
+		params.Resolution = req.Resolution
+	}
+	if params.Seed == nil && req.Seed != nil {
+		seed := int(*req.Seed)
+		params.Seed = &seed
+	}
+	if params.GenerateAudio == nil && req.GenerateAudio != nil {
+		params.GenerateAudio = req.GenerateAudio
+	}
 	params.Resolution = strings.ToLower(params.Resolution)
 	params.SampleCount = 1
 
@@ -113,6 +133,34 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		return nil, err
 	}
 	return bytes.NewReader(data), nil
+}
+
+func firstGeminiImageReference(references []map[string]interface{}) string {
+	for _, reference := range references {
+		if !strings.EqualFold(common.Interface2String(reference["type"]), "image") {
+			continue
+		}
+		for _, key := range []string{"url", "data", "image_url"} {
+			if value := strings.TrimSpace(common.Interface2String(reference[key])); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func loadGeminiTaskImageReference(reference string) (string, string, error) {
+	switch {
+	case strings.HasPrefix(reference, "http://") || strings.HasPrefix(reference, "https://"):
+		return service.GetImageFromUrl(reference)
+	case strings.HasPrefix(reference, "data:image/"):
+		return service.DecodeBase64FileData(reference)
+	default:
+		if image := ParseImageInput(reference); image != nil {
+			return image.MimeType, image.BytesBase64Encoded, nil
+		}
+		return "", "", fmt.Errorf("unsupported image reference")
+	}
 }
 
 // DoRequest delegates to common helper.

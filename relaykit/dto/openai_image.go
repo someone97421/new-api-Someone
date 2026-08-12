@@ -41,6 +41,11 @@ type ImageRequest struct {
 	Mask              json.RawMessage `json:"mask,omitempty"`
 	InputFidelity     json.RawMessage `json:"input_fidelity,omitempty"`
 	Watermark         *bool           `json:"watermark,omitempty"`
+	Seed              *int64          `json:"seed,omitempty"`
+	NegativePrompt    string          `json:"negative_prompt,omitempty"`
+	References        json.RawMessage `json:"references,omitempty"`
+	GenerateAudio     *bool           `json:"generate_audio,omitempty"`
+	FPS               *int            `json:"fps,omitempty"`
 	// zhipu 4v
 	WatermarkEnabled json.RawMessage `json:"watermark_enabled,omitempty"`
 	UserId           json.RawMessage `json:"user_id,omitempty"`
@@ -82,8 +87,8 @@ func (r ImageRequest) MarshalJSON() ([]byte, error) {
 	// 将已定义字段转为 map
 	type Alias ImageRequest
 	alias := Alias(r)
-	// Ease-compatible async image APIs use task_count instead of OpenAI n and
-	// may reject requests that contain both fields.
+	// Some asynchronous image APIs use task_count instead of OpenAI n and may
+	// reject requests that contain both fields.
 	if r.TaskCount != nil {
 		alias.N = nil
 	}

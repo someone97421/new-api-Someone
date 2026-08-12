@@ -975,18 +975,26 @@ func (channel *Channel) ValidateSettings() error {
 		}
 	}
 	if channelOtherSettings.VideoTaskEndpoints != nil {
-		if channel.Type != constant.ChannelTypeOpenAI && channel.Type != constant.ChannelTypeSora {
-			return fmt.Errorf("video_task_endpoints are only supported for OpenAI or Sora channels")
+		if channel.Type != constant.ChannelTypeOpenAI && channel.Type != constant.ChannelTypeSora && channel.Type != constant.ChannelTypeGemini2GPT {
+			return fmt.Errorf("video_task_endpoints are only supported for OpenAI or Sora channels, plus Gemini2GPT protocol bridges")
 		}
 		if err := channelOtherSettings.VideoTaskEndpoints.Validate(); err != nil {
 			return err
 		}
 	}
 	if channelOtherSettings.ImageTaskEndpoints != nil {
-		if channel.Type != constant.ChannelTypeOpenAI && channel.Type != constant.ChannelTypeAdvancedCustom {
-			return fmt.Errorf("image_task_endpoints are only supported for OpenAI or Advanced Custom channels")
+		if channel.Type != constant.ChannelTypeOpenAI && channel.Type != constant.ChannelTypeAdvancedCustom && channel.Type != constant.ChannelTypeGemini2GPT {
+			return fmt.Errorf("image_task_endpoints are only supported for OpenAI or Advanced Custom channels, plus Gemini2GPT protocol bridges")
 		}
 		if err := channelOtherSettings.ImageTaskEndpoints.Validate(); err != nil {
+			return err
+		}
+	}
+	if channelOtherSettings.ProtocolBridge != nil {
+		if channel.Type != constant.ChannelTypeGemini2GPT && channel.Type != constant.ChannelTypeGPT2Gemini {
+			return fmt.Errorf("protocol_bridge is only supported for Gemini2GPT or GPT2Gemini channels")
+		}
+		if err := channelOtherSettings.ProtocolBridge.Validate(); err != nil {
 			return err
 		}
 	}
