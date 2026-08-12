@@ -141,10 +141,10 @@ func convertGeminiNativeImageRequest(request dto.ImageRequest, info *relaycommon
 		ResponseModalities: []string{"TEXT", "IMAGE"},
 		Seed:               request.Seed,
 	}
-	if model_setting.GetGeminiSettings().ImageGenerationConfigMode == model_setting.GeminiImageGenerationConfigLegacy {
+	if model_setting.GetGeminiSettings().ImageGenerationConfigMode != model_setting.GeminiImageGenerationConfigResponseFormat {
 		legacyImageConfig, err := common.Marshal(imageConfig)
 		if err != nil {
-			return nil, fmt.Errorf("marshal legacy Gemini image config: %w", err)
+			return nil, fmt.Errorf("marshal Gemini image config: %w", err)
 		}
 		generationConfig.ImageConfig = legacyImageConfig
 	} else {

@@ -11,8 +11,9 @@ import (
 const defaultGeminiSafetySetting = "OFF"
 
 const (
-	GeminiImageGenerationConfigOfficial = "official"
-	GeminiImageGenerationConfigLegacy   = "legacy"
+	GeminiImageGenerationConfigOfficial       = "official"
+	GeminiImageGenerationConfigResponseFormat = "response_format"
+	GeminiImageGenerationConfigLegacy         = "legacy" // 旧配置值，继续按官方 imageConfig 处理
 )
 
 var validGeminiSafetySettings = map[string]struct{}{
@@ -64,7 +65,7 @@ var defaultGeminiSettings = GeminiSettings{
 
 func ValidateGeminiImageGenerationConfigMode(value string) error {
 	switch strings.TrimSpace(value) {
-	case GeminiImageGenerationConfigOfficial, GeminiImageGenerationConfigLegacy:
+	case GeminiImageGenerationConfigOfficial, GeminiImageGenerationConfigResponseFormat, GeminiImageGenerationConfigLegacy:
 		return nil
 	default:
 		return fmt.Errorf("Gemini image generation config mode must be official or legacy")

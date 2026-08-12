@@ -29,7 +29,7 @@
 - `seed`、`negative_prompt`、`watermark`
 - `image`、`images`、`image_url`、`image_urls`、`references`
 
-OpenAI 图片请求转 Gemini 图片请求时，内置转换会把比例和分辨率写入 `generationConfig.responseFormat.image`，也支持系统设置中的旧版 `generationConfig.imageConfig`。HTTP 图片和 Data URI 会转换为 Gemini `inlineData`。Gemini 图片响应会转换为 OpenAI Images 响应。
+OpenAI 图片请求转 Gemini 图片请求时，默认把比例和分辨率写入 Gemini 官方的 `generationConfig.imageConfig`。只有明确要求另一种结构的兼容中转站，才在系统设置中切换为 `generationConfig.responseFormat.image`。HTTP 图片和 Data URI 会转换为 Gemini `inlineData`。Gemini 图片响应会转换为 OpenAI Images 响应。
 
 `GPT2Gemini` 还会在没有手工模型映射时自动规范以下常见公开模型名：
 
@@ -72,8 +72,8 @@ vendor.camera_fixed
 
 ```json
 {
-  "aspect_ratio": "generationConfig.responseFormat.image.aspectRatio",
-  "image_size": "generationConfig.responseFormat.image.imageSize",
+  "aspect_ratio": "generationConfig.imageConfig.aspectRatio",
+  "image_size": "generationConfig.imageConfig.imageSize",
   "duration": "parameters.durationSeconds",
   "generate_audio": "parameters.generateAudio",
   "extra.seedance": "parameters.vendorOptions"
@@ -122,7 +122,7 @@ curl -X POST "https://your-gateway.example/v1/images/generations" \
 ## 常见问题
 
 - 返回“没有可用渠道”：检查两个渠道的公开模型名、分组、状态和模型映射是否一致。
-- Gemini 报 `Unknown name responseFormat`：在系统设置的 Gemini 图片配置中切换旧版 `imageConfig`，或升级上游网关。
+- Gemini 报 `Unknown name aspectRatio` 或 `Unknown name imageSize` 且路径位于 `responseFormat.image`：系统设置中选择“官方 imageConfig”。升级后旧的 `legacy` 配置值也会自动按正确的 `imageConfig` 处理。
 - 自定义字段没有生效：确认路径使用 JSON 点路径、源字段确实存在。协议桥会强制执行转换，自定义映射与透传在内置转换之后应用。
 - Gemini 返回模型不支持或 URL 异常：确认渠道类型为 `GPT2Gemini`，Base URL 使用 Gemini 官方根地址或只带一次 `/v1beta`；常见 Nano Banana 名称可自动转换，其他别名请在渠道“模型映射”中配置。
 - 图片参考失败：确认 URL 可由服务端访问，且未被 SSRF、文件大小或 MIME 类型限制拦截。

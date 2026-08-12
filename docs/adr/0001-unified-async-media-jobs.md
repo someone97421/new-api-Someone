@@ -104,7 +104,7 @@ pending -> delegated | settled | refunded | reconciliation_pending
 
 渠道转换规则：
 
-- 图片内置处理比例、分辨率、数量、异步标志、seed、负面提示、水印与多种参考图输入；Gemini 官方模式使用 `generationConfig.responseFormat.image`，旧版兼容模式使用 `generationConfig.imageConfig`。
+- 图片内置处理比例、分辨率、数量、异步标志、seed、负面提示、水印与多种参考图输入；Gemini 官方模式使用 `generationConfig.imageConfig`，仅为明确要求该结构的兼容中转站提供 `generationConfig.responseFormat.image` 选项。
 - 视频内置处理 duration/seconds、aspect_ratio、resolution、mode、task_count、generate_audio、seed、references、metadata 与 extra。
 - 渠道设置中的自定义字段映射和透传在内置转换后执行，保留显式 `0` 与 `false`；敏感目标路径被拒绝。
 - 协议桥属于强制转换语义，不受原始请求体直通开关影响；否则会把下游协议错误地原样发送给另一种协议的上游。

@@ -94,7 +94,9 @@ const schema = z.object({
         })
       }
     }),
-    image_generation_config_mode: z.enum(['official', 'legacy']),
+    image_generation_config_mode: z
+      .enum(['official', 'response_format', 'legacy'])
+      .transform((value) => (value === 'legacy' ? 'official' : value)),
     thinking_adapter_enabled: z.boolean(),
     thinking_adapter_budget_tokens_percentage: z.coerce
       .number()
@@ -112,7 +114,7 @@ type FlatGeminiSettings = {
   'gemini.safety_settings': string
   'gemini.version_settings': string
   'gemini.supported_imagine_models': string
-  'gemini.image_generation_config_mode': 'official' | 'legacy'
+  'gemini.image_generation_config_mode': 'official' | 'response_format'
   'gemini.thinking_adapter_enabled': boolean
   'gemini.thinking_adapter_budget_tokens_percentage': number
   'gemini.function_call_thought_signature_enabled': boolean
@@ -122,6 +124,11 @@ type FlatGeminiSettings = {
 type GeminiSettingsCardProps = {
   defaultValues: GeminiSettingsFormInput
 }
+
+const normalizeImageConfigMode = (
+  value: GeminiSettingsFormInput['gemini']['image_generation_config_mode']
+): 'official' | 'response_format' =>
+  value === 'response_format' ? 'response_format' : 'official'
 
 export function GeminiSettingsCard({ defaultValues }: GeminiSettingsCardProps) {
   const { t } = useTranslation()
@@ -137,7 +144,9 @@ export function GeminiSettingsCard({ defaultValues }: GeminiSettingsCardProps) {
       defaultValues.gemini.supported_imagine_models
     ),
     'gemini.image_generation_config_mode':
-      defaultValues.gemini.image_generation_config_mode || 'official',
+      normalizeImageConfigMode(
+        defaultValues.gemini.image_generation_config_mode
+      ),
     'gemini.thinking_adapter_enabled':
       defaultValues.gemini.thinking_adapter_enabled,
     'gemini.thinking_adapter_budget_tokens_percentage': Number(
@@ -159,7 +168,7 @@ export function GeminiSettingsCard({ defaultValues }: GeminiSettingsCardProps) {
         values.gemini.supported_imagine_models
       ),
       image_generation_config_mode:
-        values.gemini.image_generation_config_mode || 'official',
+        normalizeImageConfigMode(values.gemini.image_generation_config_mode),
       thinking_adapter_enabled: values.gemini.thinking_adapter_enabled,
       thinking_adapter_budget_tokens_percentage:
         values.gemini.thinking_adapter_budget_tokens_percentage,
@@ -191,7 +200,9 @@ export function GeminiSettingsCard({ defaultValues }: GeminiSettingsCardProps) {
         defaultValues.gemini.supported_imagine_models
       ),
       'gemini.image_generation_config_mode':
-        defaultValues.gemini.image_generation_config_mode || 'official',
+        normalizeImageConfigMode(
+          defaultValues.gemini.image_generation_config_mode
+        ),
       'gemini.thinking_adapter_enabled':
         defaultValues.gemini.thinking_adapter_enabled,
       'gemini.thinking_adapter_budget_tokens_percentage': Number(
@@ -278,7 +289,11 @@ export function GeminiSettingsCard({ defaultValues }: GeminiSettingsCardProps) {
                 <Select
                   value={field.value}
                   onValueChange={(value) =>
-                    field.onChange(value === 'legacy' ? 'legacy' : 'official')
+                    field.onChange(
+                      value === 'response_format'
+                        ? 'response_format'
+                        : 'official'
+                    )
                   }
                 >
                   <FormControl>
@@ -289,17 +304,17 @@ export function GeminiSettingsCard({ defaultValues }: GeminiSettingsCardProps) {
                   <SelectContent alignItemWithTrigger={false}>
                     <SelectGroup>
                       <SelectItem value='official'>
-                        {t('Official responseFormat (recommended)')}
+                        {t('Official imageConfig (recommended)')}
                       </SelectItem>
-                      <SelectItem value='legacy'>
-                        {t('Legacy imageConfig')}
+                      <SelectItem value='response_format'>
+                        {t('Compatible responseFormat')}
                       </SelectItem>
                     </SelectGroup>
                   </SelectContent>
                 </Select>
                 <FormDescription>
                   {t(
-                    'Use the recommended official format for Gemini. Select legacy only when an older compatible gateway rejects responseFormat.'
+                    'Gemini official API uses imageConfig for aspect ratio and image size. Select responseFormat only for a compatible gateway that explicitly requires it.'
                   )}
                 </FormDescription>
                 <FormMessage />

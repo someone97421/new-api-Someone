@@ -75,8 +75,8 @@ func TestApplyProtocolBridgeConfigUsesKnownMediaFieldMappings(t *testing.T) {
 		ProtocolBridge: &dto.ProtocolBridgeConfig{
 			PassthroughFields: []string{"seed", "generate_audio", "references"},
 			FieldMappings: map[string]string{
-				"aspect_ratio": "generationConfig.responseFormat.image.aspectRatio",
-				"image_size":   "generationConfig.responseFormat.image.imageSize",
+				"aspect_ratio": "generationConfig.imageConfig.aspectRatio",
+				"image_size":   "generationConfig.imageConfig.imageSize",
 			},
 		},
 	}}}
@@ -88,6 +88,6 @@ func TestApplyProtocolBridgeConfigUsesKnownMediaFieldMappings(t *testing.T) {
 		"seed":0,
 		"generate_audio":false,
 		"references":[{"type":"image","role":"reference_image","url":"https://example.com/ref.png"}],
-		"generationConfig":{"responseFormat":{"image":{"aspectRatio":"9:16","imageSize":"4K"}}}
+		"generationConfig":{"imageConfig":{"aspectRatio":"9:16","imageSize":"4K"}}
 	}`, string(result))
 }

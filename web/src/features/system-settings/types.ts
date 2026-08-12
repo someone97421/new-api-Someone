@@ -196,7 +196,10 @@ export type ModelSettings = {
   'gemini.safety_settings': string
   'gemini.version_settings': string
   'gemini.supported_imagine_models': string
-  'gemini.image_generation_config_mode': 'official' | 'legacy'
+  'gemini.image_generation_config_mode':
+    | 'official'
+    | 'response_format'
+    | 'legacy'
   'gemini.thinking_adapter_enabled': boolean
   'gemini.thinking_adapter_budget_tokens_percentage': number
   'gemini.function_call_thought_signature_enabled': boolean

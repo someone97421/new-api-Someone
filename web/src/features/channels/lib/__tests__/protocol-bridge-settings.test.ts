@@ -18,7 +18,7 @@ describe('protocol bridge channel settings', () => {
       models: 'public-model',
       protocol_bridge_passthrough_fields: 'seed\ngenerate_audio\nseed',
       protocol_bridge_field_mappings: JSON.stringify({
-        aspect_ratio: 'generationConfig.responseFormat.image.aspectRatio',
+        aspect_ratio: 'generationConfig.imageConfig.aspectRatio',
       }),
     })
 
@@ -26,7 +26,7 @@ describe('protocol bridge channel settings', () => {
     assert.deepEqual(settings.protocol_bridge, {
       passthrough_fields: ['seed', 'generate_audio'],
       field_mappings: {
-        aspect_ratio: 'generationConfig.responseFormat.image.aspectRatio',
+        aspect_ratio: 'generationConfig.imageConfig.aspectRatio',
       },
     })
   })

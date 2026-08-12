@@ -4420,7 +4420,7 @@ export function ChannelMutateDrawer({
                                           <Textarea
                                             className='min-h-40 font-mono text-xs'
                                             placeholder={
-                                              '{\n  "aspect_ratio": "generationConfig.responseFormat.image.aspectRatio",\n  "duration": "parameters.durationSeconds"\n}'
+                                              '{\n  "aspect_ratio": "generationConfig.imageConfig.aspectRatio",\n  "duration": "parameters.durationSeconds"\n}'
                                             }
                                             {...field}
                                           />

@@ -40,10 +40,8 @@ func TestConvertImageRequestToGeminiNativeImageGeneration(t *testing.T) {
 	assert.Equal(t, "一只像素小恐龙", request.Contents[0].Parts[0].Text)
 	assert.Equal(t, []string{"TEXT", "IMAGE"}, request.GenerationConfig.ResponseModalities)
 	assert.Nil(t, request.GenerationConfig.CandidateCount)
-	require.NotNil(t, request.GenerationConfig.ResponseFormat)
-	assert.Equal(t, "3:2", request.GenerationConfig.ResponseFormat.Image.AspectRatio)
-	assert.Equal(t, "2K", request.GenerationConfig.ResponseFormat.Image.ImageSize)
-	assert.Empty(t, request.GenerationConfig.ImageConfig)
+	assert.Nil(t, request.GenerationConfig.ResponseFormat)
+	assert.JSONEq(t, `{"aspectRatio":"3:2","imageSize":"2K"}`, string(request.GenerationConfig.ImageConfig))
 }
 
 func TestConvertExtendedOpenAIImageRequestToGeminiNativeImageGeneration(t *testing.T) {
@@ -73,15 +71,14 @@ func TestConvertExtendedOpenAIImageRequestToGeminiNativeImageGeneration(t *testi
 	require.NotNil(t, converted.Contents[0].Parts[1].InlineData)
 	assert.Equal(t, "image/png", converted.Contents[0].Parts[1].InlineData.MimeType)
 	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("reference")), converted.Contents[0].Parts[1].InlineData.Data)
-	require.NotNil(t, converted.GenerationConfig.ResponseFormat)
-	assert.Equal(t, "16:9", converted.GenerationConfig.ResponseFormat.Image.AspectRatio)
-	assert.Equal(t, "4K", converted.GenerationConfig.ResponseFormat.Image.ImageSize)
+	assert.Nil(t, converted.GenerationConfig.ResponseFormat)
+	assert.JSONEq(t, `{"aspectRatio":"16:9","imageSize":"4K"}`, string(converted.GenerationConfig.ImageConfig))
 }
 
-func TestConvertGeminiNativeImageRequestSupportsLegacyImageConfig(t *testing.T) {
+func TestConvertGeminiNativeImageRequestSupportsCompatibilityResponseFormat(t *testing.T) {
 	settings := model_setting.GetGeminiSettings()
 	originalMode := settings.ImageGenerationConfigMode
-	settings.ImageGenerationConfigMode = model_setting.GeminiImageGenerationConfigLegacy
+	settings.ImageGenerationConfigMode = model_setting.GeminiImageGenerationConfigResponseFormat
 	t.Cleanup(func() { settings.ImageGenerationConfigMode = originalMode })
 
 	info := &relaycommon.RelayInfo{
@@ -95,8 +92,10 @@ func TestConvertGeminiNativeImageRequestSupportsLegacyImageConfig(t *testing.T) 
 		return "", "", nil
 	})
 	require.NoError(t, err)
-	assert.Nil(t, converted.GenerationConfig.ResponseFormat)
-	assert.JSONEq(t, `{"aspectRatio":"1:1","imageSize":"2K"}`, string(converted.GenerationConfig.ImageConfig))
+	require.NotNil(t, converted.GenerationConfig.ResponseFormat)
+	assert.Equal(t, "1:1", converted.GenerationConfig.ResponseFormat.Image.AspectRatio)
+	assert.Equal(t, "2K", converted.GenerationConfig.ResponseFormat.Image.ImageSize)
+	assert.Empty(t, converted.GenerationConfig.ImageConfig)
 }
 
 func TestConvertGeminiNativeImageRequestRejectsTooManyReferences(t *testing.T) {
