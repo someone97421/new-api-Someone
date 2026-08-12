@@ -13,8 +13,8 @@
 
 1. 进入“渠道管理”，新建渠道。
 2. 如果上游是 Gemini 官方或 Gemini 原生中转，类型选择 `GPT2Gemini`；如果上游接受 OpenAI 兼容请求，类型选择 `Gemini2GPT`。
-3. 填写上游 Base URL 和密钥。Base URL 不带末尾 `/`。
-4. 在“模型”填写下游公开模型名；若上游模型名不同，在“模型映射”填写映射关系。
+3. 填写上游 Base URL 和密钥。Gemini 官方可填写 `https://generativelanguage.googleapis.com`，也兼容末尾已带 `/v1beta` 的地址。
+4. 在“模型”填写下游公开模型名；若上游模型名不同，在“模型映射”填写映射关系。`GPT2Gemini` 已内置常见 Nano Banana 别名，手工模型映射仍具有更高优先级。
 5. 对需要故障转移的渠道使用相同公开模型名和相同分组。主渠道优先级填较大值，备用渠道填较小值。
 6. 展开“高级设置 → 渠道额外设置”，按需填写图片/视频上游路径、自定义透传字段和自定义字段替换。
 7. 保存后重启应用，使新增渠道类型的后端代码生效。数据库不需要手工迁移。
@@ -30,6 +30,15 @@
 - `image`、`images`、`image_url`、`image_urls`、`references`
 
 OpenAI 图片请求转 Gemini 图片请求时，内置转换会把比例和分辨率写入 `generationConfig.responseFormat.image`，也支持系统设置中的旧版 `generationConfig.imageConfig`。HTTP 图片和 Data URI 会转换为 Gemini `inlineData`。Gemini 图片响应会转换为 OpenAI Images 响应。
+
+`GPT2Gemini` 还会在没有手工模型映射时自动规范以下常见公开模型名：
+
+```text
+nano-banana-2   -> gemini-3.1-flash-image
+nano-banana-pro -> gemini-3-pro-image
+```
+
+例如 Canvas 仍可提交 `model: "nano-banana-2"`，协议桥会把请求发往 Gemini 官方的 `gemini-3.1-flash-image:generateContent`。如果渠道的“模型映射”显式配置了 `nano-banana-2`，则以管理员配置为准，不会被内置别名覆盖。
 
 视频请求已覆盖：
 
@@ -73,6 +82,8 @@ vendor.camera_fixed
 
 执行顺序为：内置协议转换 → 自定义字段替换 → 自定义同名透传 → 渠道原有参数覆盖。后执行的规则可以覆盖前面的转换结果。鉴权、Base URL、目标 URL 等敏感根字段禁止作为映射目标。
 
+协议桥渠道始终执行协议转换，不受全局或渠道“直接透传请求体”开关影响。该开关适合上下游协议完全相同的普通渠道；若在协议桥中直接把 OpenAI 请求原样交给 Gemini，Gemini 会因字段和结构不匹配而拒绝请求。
+
 ## 路径设置
 
 `Gemini2GPT` 可设置：
@@ -112,7 +123,8 @@ curl -X POST "https://your-gateway.example/v1/images/generations" \
 
 - 返回“没有可用渠道”：检查两个渠道的公开模型名、分组、状态和模型映射是否一致。
 - Gemini 报 `Unknown name responseFormat`：在系统设置的 Gemini 图片配置中切换旧版 `imageConfig`，或升级上游网关。
-- 自定义字段没有生效：确认路径使用 JSON 点路径、源字段确实存在，且没有开启“直接透传请求体”。直接透传会绕过协议转换。
+- 自定义字段没有生效：确认路径使用 JSON 点路径、源字段确实存在。协议桥会强制执行转换，自定义映射与透传在内置转换之后应用。
+- Gemini 返回模型不支持或 URL 异常：确认渠道类型为 `GPT2Gemini`，Base URL 使用 Gemini 官方根地址或只带一次 `/v1beta`；常见 Nano Banana 名称可自动转换，其他别名请在渠道“模型映射”中配置。
 - 图片参考失败：确认 URL 可由服务端访问，且未被 SSRF、文件大小或 MIME 类型限制拦截。
 - 视频查询失败：检查查询路径的 `{task_id}`，以及任务是否仍绑定创建它的原渠道。
 - 修改渠道类型后行为未变化：保存渠道并重启后端；前端静态资源也需要重新构建或更新部署。

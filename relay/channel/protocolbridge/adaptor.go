@@ -25,6 +25,11 @@ type Adaptor struct {
 	gemini gemini.Adaptor
 }
 
+var gptToGeminiImageModelAliases = map[string]string{
+	"nano-banana-2":   "gemini-3.1-flash-image",
+	"nano-banana-pro": "gemini-3-pro-image",
+}
+
 func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 	a.openai.Init(info)
 	a.gemini.Init(info)
@@ -151,6 +156,12 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 
 func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.ImageRequest) (any, error) {
 	if info.ChannelType == constant.ChannelTypeGPT2Gemini {
+		if !info.IsModelMapped {
+			if upstreamModel, ok := gptToGeminiImageModelAliases[strings.TrimSpace(info.UpstreamModelName)]; ok {
+				info.UpstreamModelName = upstreamModel
+				request.Model = upstreamModel
+			}
+		}
 		value, err := a.gemini.ConvertImageRequest(c, info, request)
 		return a.bridge(c, info, value, err)
 	}

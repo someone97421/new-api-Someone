@@ -51,6 +51,68 @@ func TestGPT2GeminiImageUsesBuiltInMediaConversionAndCustomMapping(t *testing.T)
 	assert.Contains(t, string(encoded), `"vendorStyle":"plush"`)
 }
 
+func TestGPT2GeminiImageNormalizesCanvasNanoBananaAlias(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/v1/images/generations?async=true", bytes.NewBufferString(`{
+		"model":"nano-banana-2","prompt":"pixel dinosaur","response_format":"url",
+		"task_count":1,"async":true,"aspect_ratio":"16:9","image_size":"2K"
+	}`))
+	_, err := rootcommon.GetBodyStorage(c)
+	require.NoError(t, err)
+	taskCount := uint(1)
+	async := true
+	info := &relaycommon.RelayInfo{
+		RelayMode:       relayconstant.RelayModeImagesGenerations,
+		OriginModelName: "nano-banana-2",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType:       constant.ChannelTypeGPT2Gemini,
+			ChannelBaseUrl:    "https://generativelanguage.googleapis.com",
+			UpstreamModelName: "nano-banana-2",
+		},
+	}
+	request := dto.ImageRequest{
+		Model: "nano-banana-2", Prompt: "pixel dinosaur", ResponseFormat: "url",
+		TaskCount: &taskCount, Async: &async, AspectRatio: "16:9", ImageSize: "2K",
+	}
+
+	converted, err := (&Adaptor{}).ConvertImageRequest(c, info, request)
+	require.NoError(t, err)
+	assert.Equal(t, "gemini-3.1-flash-image", info.UpstreamModelName)
+
+	requestURL, err := (&Adaptor{}).GetRequestURL(info)
+	require.NoError(t, err)
+	assert.Equal(t, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent", requestURL)
+
+	body, ok := converted.(map[string]any)
+	require.True(t, ok)
+	encoded, err := rootcommon.Marshal(body)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"responseModalities":["TEXT","IMAGE"]`)
+	assert.Contains(t, string(encoded), `"aspectRatio":"16:9"`)
+	assert.Contains(t, string(encoded), `"imageSize":"2K"`)
+	assert.NotContains(t, string(encoded), `"task_count"`)
+	assert.NotContains(t, string(encoded), `"async"`)
+}
+
+func TestGPT2GeminiImageKeepsExplicitChannelModelMapping(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		RelayMode:       relayconstant.RelayModeImagesGenerations,
+		OriginModelName: "nano-banana-2",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType:       constant.ChannelTypeGPT2Gemini,
+			UpstreamModelName: "gemini-3.1-flash-image-preview",
+			IsModelMapped:     true,
+		},
+	}
+
+	_, err := (&Adaptor{}).ConvertImageRequest(nil, info, dto.ImageRequest{
+		Model: "gemini-3.1-flash-image-preview", Prompt: "pixel dinosaur",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "gemini-3.1-flash-image-preview", info.UpstreamModelName)
+}
+
 func TestGemini2GPTChatChoosesOpenAIEndpoint(t *testing.T) {
 	info := &relaycommon.RelayInfo{
 		RelayMode:      relayconstant.RelayModeGemini,

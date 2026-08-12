@@ -107,6 +107,8 @@ pending -> delegated | settled | refunded | reconciliation_pending
 - 图片内置处理比例、分辨率、数量、异步标志、seed、负面提示、水印与多种参考图输入；Gemini 官方模式使用 `generationConfig.responseFormat.image`，旧版兼容模式使用 `generationConfig.imageConfig`。
 - 视频内置处理 duration/seconds、aspect_ratio、resolution、mode、task_count、generate_audio、seed、references、metadata 与 extra。
 - 渠道设置中的自定义字段映射和透传在内置转换后执行，保留显式 `0` 与 `false`；敏感目标路径被拒绝。
+- 协议桥属于强制转换语义，不受原始请求体直通开关影响；否则会把下游协议错误地原样发送给另一种协议的上游。
+- `GPT2Gemini` 在未配置手工模型映射时规范常见 Nano Banana 图片别名，手工模型映射优先；Gemini Base URL 同时兼容根地址和已包含版本段的地址。
 - OpenAI 兼容图片和视频渠道可分别覆盖提交、查询、内容与 remix 路径。
 - 常见异步响应 URL 字段继续统一进入本站文件转存流程。
 - 查询响应明确进入失败终态时，本站任务同步失败，不再永久保持 `waiting_upstream`。

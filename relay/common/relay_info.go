@@ -965,6 +965,19 @@ func FailTaskInfo(reason string) *TaskInfo {
 	}
 }
 
+// ShouldPassThroughRequestBody reports whether the original downstream body
+// may be sent upstream unchanged. Protocol bridge channels always require a
+// conversion, even when global or per-channel passthrough is enabled.
+func ShouldPassThroughRequestBody(info *RelayInfo) bool {
+	if info == nil || info.ChannelMeta == nil {
+		return model_setting.GetGlobalSettings().PassThroughRequestEnabled
+	}
+	if info.ChannelType == constant.ChannelTypeGemini2GPT || info.ChannelType == constant.ChannelTypeGPT2Gemini {
+		return false
+	}
+	return model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled
+}
+
 // RemoveDisabledFields 从请求 JSON 数据中移除渠道设置中禁用的字段
 // service_tier: 服务层级字段，可能导致额外计费（OpenAI、Claude、Responses API 支持）
 // inference_geo: Claude 数据驻留推理区域字段（仅 Claude 支持，默认过滤）
