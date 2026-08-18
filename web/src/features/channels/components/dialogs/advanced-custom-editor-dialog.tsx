@@ -28,7 +28,7 @@ import {
   Trash2,
   type LucideIcon,
 } from 'lucide-react'
-import { type ReactNode, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -55,6 +55,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
+import { Textarea } from '@/components/ui/textarea'
 import {
   Tooltip,
   TooltipContent,
@@ -85,9 +86,13 @@ import {
   getDefaultAdvancedCustomIncomingPath,
   isAdvancedCustomIncomingPathAllowed,
   normalizeAdvancedCustomConfig,
+  parseAdvancedCustomFieldMappings,
+  parseAdvancedCustomPassthroughFields,
   parseAdvancedCustomRouteModels,
   parseAdvancedCustomConfig,
   stringifyAdvancedCustomConfig,
+  stringifyAdvancedCustomFieldMappings,
+  stringifyAdvancedCustomPassthroughFields,
   validateAdvancedCustomConfig,
 } from '../../lib/advanced-custom'
 import type {
@@ -1324,7 +1329,114 @@ function RouteEditor({
           </div>
         </>
       ) : null}
+
+      {!isModelListRoute ? (
+        <RouteFieldBridgeEditor route={route} onChange={onChange} />
+      ) : null}
     </div>
+  )
+}
+
+function sameStringRecord(
+  left: Record<string, string>,
+  right: Record<string, string> | undefined
+): boolean {
+  const nextRight = right || {}
+  const leftKeys = Object.keys(left)
+  const rightKeys = Object.keys(nextRight)
+  if (leftKeys.length !== rightKeys.length) return false
+  return leftKeys.every((key) => left[key] === nextRight[key])
+}
+
+function RouteFieldBridgeEditor({
+  route,
+  onChange,
+}: {
+  route: AdvancedCustomRoute
+  onChange: (patch: Partial<AdvancedCustomRoute>) => void
+}) {
+  const { t } = useTranslation()
+  const committedPassthroughText = stringifyAdvancedCustomPassthroughFields(
+    route.passthrough_fields
+  )
+  const committedMappingsText = stringifyAdvancedCustomFieldMappings(
+    route.field_mappings
+  )
+  const [passthroughDraft, setPassthroughDraft] = useState(
+    committedPassthroughText
+  )
+  const [mappingsDraft, setMappingsDraft] = useState(committedMappingsText)
+  const mappingsParse = parseAdvancedCustomFieldMappings(mappingsDraft)
+
+  useEffect(() => {
+    const parsedDraft = parseAdvancedCustomPassthroughFields(passthroughDraft)
+    if (
+      stringifyAdvancedCustomPassthroughFields(parsedDraft) !==
+      committedPassthroughText
+    ) {
+      setPassthroughDraft(committedPassthroughText)
+    }
+  }, [committedPassthroughText, passthroughDraft])
+
+  useEffect(() => {
+    const parsedDraft = parseAdvancedCustomFieldMappings(mappingsDraft)
+    if (parsedDraft.error) return
+    if (!sameStringRecord(parsedDraft.mappings, route.field_mappings)) {
+      setMappingsDraft(committedMappingsText)
+    }
+  }, [committedMappingsText, mappingsDraft, route.field_mappings])
+
+  return (
+    <>
+      <Separator />
+      <div className='grid gap-4 md:grid-cols-2'>
+        <FieldBlock label={t('Custom passthrough fields')}>
+          <Textarea
+            className='min-h-28 font-mono text-xs'
+            value={passthroughDraft}
+            onChange={(event) => {
+              const nextValue = event.target.value
+              setPassthroughDraft(nextValue)
+              onChange({
+                passthrough_fields:
+                  parseAdvancedCustomPassthroughFields(nextValue),
+              })
+            }}
+            placeholder={'seed\nnegative_prompt\nmetadata.vendor_option'}
+          />
+          <p className='text-muted-foreground text-xs leading-relaxed'>
+            {t(
+              'One JSON path per line. Existing values, including 0 and false, are copied after the built-in conversion.'
+            )}
+          </p>
+        </FieldBlock>
+        <FieldBlock label={t('Custom field replacements')}>
+          <Textarea
+            className='min-h-28 font-mono text-xs'
+            value={mappingsDraft}
+            onChange={(event) => {
+              const nextValue = event.target.value
+              setMappingsDraft(nextValue)
+              const parsed = parseAdvancedCustomFieldMappings(nextValue)
+              if (parsed.error) return
+              onChange({ field_mappings: parsed.mappings })
+            }}
+            placeholder={
+              '{\n  "aspect_ratio": "generationConfig.imageConfig.aspectRatio",\n  "duration": "parameters.durationSeconds"\n}'
+            }
+            aria-invalid={Boolean(mappingsParse.error)}
+          />
+          <p className='text-muted-foreground text-xs leading-relaxed'>
+            {t(
+              'Enter a JSON object: each source request path maps to an upstream request path. Custom mappings override built-in converted values.'
+            )}
+          </p>
+          {mappingsParse.error ? (
+            <p className='text-destructive text-xs'>{t(mappingsParse.error)}</p>
+          ) : null}
+        </FieldBlock>
+      </div>
+    </>
   )
 }
 

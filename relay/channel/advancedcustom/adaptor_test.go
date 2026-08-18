@@ -786,6 +786,54 @@ func TestAdaptorConvertsGeminiRequestToOpenAIChatUpstream(t *testing.T) {
 	assert.Equal(t, "user", chatReq.Messages[0].Role)
 }
 
+func TestAdaptorAppliesRouteFieldBridgeAfterConversion(t *testing.T) {
+	adaptor := &Adaptor{}
+	info := advancedCustomRelayInfo(&dto.AdvancedCustomConfig{
+		Routes: []dto.AdvancedCustomRoute{
+			{
+				IncomingPath:      "/v1/chat/completions",
+				UpstreamPath:      "/v1beta/models/{model}:generateContent",
+				Converter:         relayconvert.ConverterOpenAIChatToGeminiContent,
+				PassthroughFields: []string{"seed", "vendor.camera"},
+				FieldMappings: map[string]string{
+					"aspect_ratio": "generationConfig.imageConfig.aspectRatio",
+				},
+			},
+		},
+	})
+	info.OriginModelName = "gemini-test"
+	info.UpstreamModelName = "gemini-test"
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{
+		"model":"gemini-test",
+		"messages":[{"role":"user","content":"hi"}],
+		"aspect_ratio":"16:9",
+		"seed":0,
+		"vendor":{"camera":"orbit"}
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	_, err := common.GetBodyStorage(c)
+	require.NoError(t, err)
+
+	converted, err := adaptor.ConvertOpenAIRequest(c, info, &dto.GeneralOpenAIRequest{
+		Model: "gemini-test",
+		Messages: []dto.Message{
+			{Role: "user", Content: "hi"},
+		},
+	})
+	require.NoError(t, err)
+
+	payload, ok := converted.(map[string]any)
+	require.True(t, ok)
+	encoded, err := common.Marshal(payload)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"seed":0`)
+	assert.Contains(t, string(encoded), `"camera":"orbit"`)
+	assert.Contains(t, string(encoded), `"aspectRatio":"16:9"`)
+}
+
 func advancedCustomRelayInfo(config *dto.AdvancedCustomConfig) *relaycommon.RelayInfo {
 	return &relaycommon.RelayInfo{
 		RelayFormat:     types.RelayFormatOpenAI,

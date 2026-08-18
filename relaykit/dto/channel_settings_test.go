@@ -72,6 +72,54 @@ func TestProtocolBridgeConfigValidate(t *testing.T) {
 	assert.Contains(t, err.Error(), "protected")
 }
 
+func TestAdvancedCustomValidateRouteFieldBridge(t *testing.T) {
+	valid := &AdvancedCustomConfig{
+		Routes: []AdvancedCustomRoute{
+			{
+				IncomingPath:      "/v1/chat/completions",
+				UpstreamPath:      "/v1beta/models/{model}:generateContent",
+				Converter:         advancedCustomConverterOpenAIChatToGeminiContent,
+				PassthroughFields: []string{"seed", "extra.vendor"},
+				FieldMappings: map[string]string{
+					"aspect_ratio": "generationConfig.imageConfig.aspectRatio",
+				},
+			},
+		},
+	}
+	require.NoError(t, valid.Validate())
+
+	protected := &AdvancedCustomConfig{
+		Routes: []AdvancedCustomRoute{
+			{
+				IncomingPath: "/v1/chat/completions",
+				UpstreamPath: "/v1/chat/completions",
+				Converter:    advancedCustomConverterNone,
+				FieldMappings: map[string]string{
+					"token": "authorization",
+				},
+			},
+		},
+	}
+	err := protected.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "advanced_custom.advanced_routes[0]")
+	assert.Contains(t, err.Error(), "protected")
+
+	modelList := &AdvancedCustomConfig{
+		Routes: []AdvancedCustomRoute{
+			{
+				IncomingPath:      AdvancedCustomModelListPath,
+				UpstreamPath:      AdvancedCustomModelListPath,
+				Converter:         advancedCustomConverterNone,
+				PassthroughFields: []string{"seed"},
+			},
+		},
+	}
+	err = modelList.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not set passthrough_fields or field_mappings")
+}
+
 func TestAdvancedCustomValidateModelListRouteConstraints(t *testing.T) {
 	valid := &AdvancedCustomConfig{
 		Routes: []AdvancedCustomRoute{

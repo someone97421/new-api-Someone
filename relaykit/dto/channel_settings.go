@@ -99,22 +99,29 @@ type ProtocolBridgeConfig struct {
 }
 
 func (c *ProtocolBridgeConfig) Validate() error {
+	return validateProtocolBridgeConfig(c, "protocol_bridge")
+}
+
+func validateProtocolBridgeConfig(c *ProtocolBridgeConfig, fieldPrefix string) error {
 	if c == nil {
 		return nil
 	}
+	if fieldPrefix == "" {
+		fieldPrefix = "protocol_bridge"
+	}
 	if len(c.PassthroughFields) > 128 || len(c.FieldMappings) > 128 {
-		return fmt.Errorf("protocol_bridge supports at most 128 passthrough fields and 128 field mappings")
+		return fmt.Errorf("%s supports at most 128 passthrough fields and 128 field mappings", fieldPrefix)
 	}
 	for _, path := range c.PassthroughFields {
-		if err := validateProtocolBridgePath("passthrough field", path, false); err != nil {
+		if err := validateProtocolBridgePath(fieldPrefix+" passthrough field", path, false); err != nil {
 			return err
 		}
 	}
 	for source, target := range c.FieldMappings {
-		if err := validateProtocolBridgePath("mapping source", source, false); err != nil {
+		if err := validateProtocolBridgePath(fieldPrefix+" mapping source", source, false); err != nil {
 			return err
 		}
-		if err := validateProtocolBridgePath("mapping target", target, true); err != nil {
+		if err := validateProtocolBridgePath(fieldPrefix+" mapping target", target, true); err != nil {
 			return err
 		}
 	}
@@ -126,13 +133,13 @@ var protocolBridgePathPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+(?:\.[A-Za-z0
 func validateProtocolBridgePath(field string, path string, target bool) error {
 	path = strings.TrimSpace(path)
 	if path == "" || len(path) > 256 || !protocolBridgePathPattern.MatchString(path) {
-		return fmt.Errorf("protocol_bridge %s is invalid: %s", field, path)
+		return fmt.Errorf("%s is invalid: %s", field, path)
 	}
 	if target {
 		root := strings.ToLower(strings.Split(path, ".")[0])
 		switch root {
 		case "authorization", "api_key", "apikey", "access_token", "base_url", "url":
-			return fmt.Errorf("protocol_bridge mapping target is protected: %s", path)
+			return fmt.Errorf("%s is protected: %s", field, path)
 		}
 	}
 	return nil
@@ -257,11 +264,13 @@ type AdvancedCustomConfig struct {
 }
 
 type AdvancedCustomRoute struct {
-	IncomingPath string                   `json:"incoming_path,omitempty"`
-	UpstreamPath string                   `json:"upstream_path,omitempty"`
-	Converter    string                   `json:"converter,omitempty"`
-	Models       []string                 `json:"models,omitempty"`
-	Auth         *AdvancedCustomRouteAuth `json:"auth,omitempty"`
+	IncomingPath      string                   `json:"incoming_path,omitempty"`
+	UpstreamPath      string                   `json:"upstream_path,omitempty"`
+	Converter         string                   `json:"converter,omitempty"`
+	Models            []string                 `json:"models,omitempty"`
+	Auth              *AdvancedCustomRouteAuth `json:"auth,omitempty"`
+	PassthroughFields []string                 `json:"passthrough_fields,omitempty"`
+	FieldMappings     map[string]string        `json:"field_mappings,omitempty"`
 }
 
 type AdvancedCustomRouteAuth struct {
@@ -554,6 +563,9 @@ func (c *AdvancedCustomConfig) Validate() error {
 		if err := validateAdvancedCustomRouteAuth(i, route.Auth); err != nil {
 			return err
 		}
+		if err := validateAdvancedCustomRouteFieldBridge(i, route); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -684,6 +696,23 @@ func validateAdvancedCustomConverterPath(index int, incomingPath string, convert
 		}
 	}
 	return fmt.Errorf("advanced_custom.advanced_routes[%d].converter does not match incoming_path: %s", index, converter)
+}
+
+func (r AdvancedCustomRoute) FieldBridgeConfig() *ProtocolBridgeConfig {
+	if len(r.PassthroughFields) == 0 && len(r.FieldMappings) == 0 {
+		return nil
+	}
+	return &ProtocolBridgeConfig{
+		PassthroughFields: r.PassthroughFields,
+		FieldMappings:     r.FieldMappings,
+	}
+}
+
+func validateAdvancedCustomRouteFieldBridge(index int, route AdvancedCustomRoute) error {
+	if route.IncomingPath == AdvancedCustomModelListPath && route.FieldBridgeConfig() != nil {
+		return fmt.Errorf("advanced_custom.advanced_routes[%d] must not set passthrough_fields or field_mappings for /v1/models", index)
+	}
+	return validateProtocolBridgeConfig(route.FieldBridgeConfig(), fmt.Sprintf("advanced_custom.advanced_routes[%d]", index))
 }
 
 func validateAdvancedCustomRouteAuth(index int, auth *AdvancedCustomRouteAuth) error {

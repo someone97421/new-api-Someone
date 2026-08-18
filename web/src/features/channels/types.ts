@@ -141,6 +141,8 @@ export interface AdvancedCustomRoute {
   converter?: AdvancedCustomConverter
   models?: string[]
   auth?: AdvancedCustomRouteAuth
+  passthrough_fields?: string[]
+  field_mappings?: Record<string, string>
 }
 
 export interface AdvancedCustomRouteAuth {

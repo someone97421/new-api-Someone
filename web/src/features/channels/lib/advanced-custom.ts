@@ -629,6 +629,10 @@ export function validateAdvancedCustomConfig(
     if (authError) {
       return { routeIndex: index, message: authError }
     }
+    const fieldBridgeError = validateRouteFieldBridge(route)
+    if (fieldBridgeError) {
+      return { routeIndex: index, message: fieldBridgeError }
+    }
   }
 
   return null
@@ -727,7 +731,86 @@ function normalizeAdvancedCustomRoute(
       value: route.auth.value || '',
     }
   }
+  const passthroughFields = normalizeAdvancedCustomPassthroughFields(
+    route.passthrough_fields
+  )
+  if (passthroughFields.length > 0) {
+    nextRoute.passthrough_fields = passthroughFields
+  }
+  const fieldMappings = normalizeAdvancedCustomFieldMappings(
+    route.field_mappings
+  )
+  if (Object.keys(fieldMappings).length > 0) {
+    nextRoute.field_mappings = fieldMappings
+  }
   return nextRoute
+}
+
+export function parseAdvancedCustomPassthroughFields(value: string): string[] {
+  return [
+    ...new Set(
+      value
+        .split(/[\n,]/)
+        .map((field) => field.trim())
+        .filter(Boolean)
+    ),
+  ]
+}
+
+export function stringifyAdvancedCustomPassthroughFields(
+  fields: string[] | undefined
+): string {
+  return normalizeAdvancedCustomPassthroughFields(fields).join('\n')
+}
+
+export function parseAdvancedCustomFieldMappings(value: string): {
+  mappings: Record<string, string>
+  error: string | null
+} {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return { mappings: {}, error: null }
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {
+        mappings: {},
+        error: 'Custom field replacements must be a JSON object',
+      }
+    }
+    const mappings: Record<string, string> = {}
+    for (const [source, target] of Object.entries(
+      parsed as Record<string, unknown>
+    )) {
+      if (typeof target !== 'string') {
+        return {
+          mappings: {},
+          error: 'Custom field replacements must map strings to strings',
+        }
+      }
+      mappings[source] = target
+    }
+    return {
+      mappings: normalizeAdvancedCustomFieldMappings(mappings),
+      error: null,
+    }
+  } catch {
+    return {
+      mappings: {},
+      error: 'Custom field replacements must be valid JSON',
+    }
+  }
+}
+
+export function stringifyAdvancedCustomFieldMappings(
+  mappings: Record<string, string> | undefined
+): string {
+  const normalized = normalizeAdvancedCustomFieldMappings(mappings)
+  if (Object.keys(normalized).length === 0) {
+    return ''
+  }
+  return JSON.stringify(normalized, null, 2)
 }
 
 function normalizeAdvancedCustomRouteModels(
@@ -859,6 +942,90 @@ function isConverterPathAllowed(
     incomingPath.includes(':generateContent') ||
     incomingPath.includes(':streamGenerateContent')
   )
+}
+
+function normalizeAdvancedCustomPassthroughFields(
+  fields: string[] | undefined
+): string[] {
+  if (!Array.isArray(fields)) return []
+  return [...new Set(fields.map((field) => field.trim()).filter(Boolean))]
+}
+
+function normalizeAdvancedCustomFieldMappings(
+  mappings: Record<string, string> | undefined
+): Record<string, string> {
+  if (!mappings || typeof mappings !== 'object' || Array.isArray(mappings)) {
+    return {}
+  }
+  const normalized: Record<string, string> = {}
+  for (const [source, target] of Object.entries(mappings)) {
+    const nextSource = source.trim()
+    const nextTarget = typeof target === 'string' ? target.trim() : ''
+    if (!nextSource || !nextTarget) continue
+    normalized[nextSource] = nextTarget
+  }
+  return normalized
+}
+
+const PROTOCOL_BRIDGE_PATH_PATTERN = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/
+const PROTOCOL_BRIDGE_PROTECTED_TARGETS = new Set([
+  'authorization',
+  'api_key',
+  'apikey',
+  'access_token',
+  'base_url',
+  'url',
+])
+
+function validateRouteFieldBridge(route: AdvancedCustomRoute): string | null {
+  const passthroughFields = normalizeAdvancedCustomPassthroughFields(
+    route.passthrough_fields
+  )
+  const fieldMappings = normalizeAdvancedCustomFieldMappings(
+    route.field_mappings
+  )
+  if (
+    passthroughFields.length === 0 &&
+    Object.keys(fieldMappings).length === 0
+  ) {
+    return null
+  }
+  if (route.incoming_path?.trim() === ADVANCED_CUSTOM_MODEL_LIST_PATH) {
+    return 'OpenAI Models route does not support custom field rules'
+  }
+  if (
+    passthroughFields.length > 128 ||
+    Object.keys(fieldMappings).length > 128
+  ) {
+    return 'Custom field rules support at most 128 entries'
+  }
+  for (const path of passthroughFields) {
+    const pathError = validateProtocolBridgePath(path, false)
+    if (pathError) return pathError
+  }
+  for (const [source, target] of Object.entries(fieldMappings)) {
+    const sourceError = validateProtocolBridgePath(source, false)
+    if (sourceError) return sourceError
+    const targetError = validateProtocolBridgePath(target, true)
+    if (targetError) return targetError
+  }
+  return null
+}
+
+function validateProtocolBridgePath(
+  path: string,
+  target: boolean
+): string | null {
+  if (!path || path.length > 256 || !PROTOCOL_BRIDGE_PATH_PATTERN.test(path)) {
+    return 'Custom field path is invalid'
+  }
+  if (target) {
+    const root = path.split('.')[0]?.toLowerCase() || ''
+    if (PROTOCOL_BRIDGE_PROTECTED_TARGETS.has(root)) {
+      return 'Custom field replacement target is protected'
+    }
+  }
+  return null
 }
 
 function validateRouteAuth(

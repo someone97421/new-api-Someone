@@ -50,7 +50,8 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 		return nil, err
 	}
 	if converter == relayconvert.ConverterNone {
-		return a.convertOpenAICompatibleRequest(c, info, request)
+		converted, convertErr := a.convertOpenAICompatibleRequest(c, info, request)
+		return a.applyRouteFieldBridge(c, converted, convertErr)
 	}
 
 	switch converter {
@@ -61,7 +62,7 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 		if err != nil {
 			return nil, err
 		}
-		return result.Value, nil
+		return a.applyRouteFieldBridge(c, result.Value, nil)
 	default:
 		return nil, fmt.Errorf("converter %q does not support OpenAI chat completions requests", converter)
 	}
@@ -75,7 +76,8 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 
 	switch converter {
 	case relayconvert.ConverterNone:
-		return a.claudeAdaptor.ConvertClaudeRequest(c, info, request)
+		converted, convertErr := a.claudeAdaptor.ConvertClaudeRequest(c, info, request)
+		return a.applyRouteFieldBridge(c, converted, convertErr)
 	case relayconvert.ConverterClaudeMessagesToOpenAIChat:
 		result, err := service.ConvertRequestByID(c, info, converter, request)
 		if err != nil {
@@ -85,7 +87,8 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 		if !ok {
 			return nil, fmt.Errorf("expected OpenAI chat completions request, got %T", result.Value)
 		}
-		return a.convertOpenAICompatibleRequest(c, info, chatRequest)
+		converted, convertErr := a.convertOpenAICompatibleRequest(c, info, chatRequest)
+		return a.applyRouteFieldBridge(c, converted, convertErr)
 	default:
 		return nil, fmt.Errorf("converter %q does not support Anthropic Messages requests", converter)
 	}
@@ -99,7 +102,8 @@ func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayIn
 
 	switch converter {
 	case relayconvert.ConverterNone:
-		return a.geminiAdaptor.ConvertGeminiRequest(c, info, request)
+		converted, convertErr := a.geminiAdaptor.ConvertGeminiRequest(c, info, request)
+		return a.applyRouteFieldBridge(c, converted, convertErr)
 	case relayconvert.ConverterGeminiContentToOpenAIChat:
 		result, err := service.ConvertRequestByID(c, info, converter, request)
 		if err != nil {
@@ -109,7 +113,8 @@ func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayIn
 		if !ok {
 			return nil, fmt.Errorf("expected OpenAI chat completions request, got %T", result.Value)
 		}
-		return a.convertOpenAICompatibleRequest(c, info, chatRequest)
+		converted, convertErr := a.convertOpenAICompatibleRequest(c, info, chatRequest)
+		return a.applyRouteFieldBridge(c, converted, convertErr)
 	default:
 		return nil, fmt.Errorf("converter %q does not support Gemini generateContent requests", converter)
 	}
@@ -122,7 +127,8 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	}
 	switch converter {
 	case relayconvert.ConverterNone:
-		return a.convertOpenAICompatibleResponsesRequest(c, info, request)
+		converted, convertErr := a.convertOpenAICompatibleResponsesRequest(c, info, request)
+		return a.applyRouteFieldBridge(c, converted, convertErr)
 	case relayconvert.ConverterOpenAIResponsesToOpenAIChat:
 		result, err := service.ConvertRequestByID(c, info, converter, request)
 		if err != nil {
@@ -132,7 +138,8 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 		if !ok {
 			return nil, fmt.Errorf("expected OpenAI chat completions request, got %T", result.Value)
 		}
-		return a.convertOpenAICompatibleRequest(c, info, chatRequest)
+		converted, convertErr := a.convertOpenAICompatibleRequest(c, info, chatRequest)
+		return a.applyRouteFieldBridge(c, converted, convertErr)
 	case relayconvert.ConverterOpenAIResponsesToGemini:
 		result, err := service.ConvertRequestByID(c, info, converter, request)
 		if err != nil {
@@ -142,7 +149,7 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 		if !ok {
 			return nil, fmt.Errorf("expected Gemini generateContent request, got %T", result.Value)
 		}
-		return geminiRequest, nil
+		return a.applyRouteFieldBridge(c, geminiRequest, nil)
 	default:
 		return nil, fmt.Errorf("converter %q does not support OpenAI Responses requests", converter)
 	}
@@ -156,7 +163,8 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 	if converter != relayconvert.ConverterNone {
 		return nil, fmt.Errorf("converter %q does not support embedding requests", converter)
 	}
-	return a.convertOpenAICompatibleEmbeddingRequest(c, info, request)
+	converted, convertErr := a.convertOpenAICompatibleEmbeddingRequest(c, info, request)
+	return a.applyRouteFieldBridge(c, converted, convertErr)
 }
 
 func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.AudioRequest) (io.Reader, error) {
@@ -178,7 +186,8 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 	if converter != relayconvert.ConverterNone {
 		return nil, fmt.Errorf("converter %q does not support image requests", converter)
 	}
-	return a.convertOpenAICompatibleImageRequest(c, info, request)
+	converted, convertErr := a.convertOpenAICompatibleImageRequest(c, info, request)
+	return a.applyRouteFieldBridge(c, converted, convertErr)
 }
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {
@@ -345,6 +354,20 @@ func (a *Adaptor) resolveForConversion(c *gin.Context, info *relaycommon.RelayIn
 	}
 	a.converted = true
 	return a.converter, nil
+}
+
+func (a *Adaptor) applyRouteFieldBridge(c *gin.Context, value any, err error) (any, error) {
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := value.(io.Reader); ok {
+		return value, nil
+	}
+	config := a.route.FieldBridgeConfig()
+	if config == nil {
+		return value, nil
+	}
+	return relaycommon.MarshalAndApplyProtocolBridgeFields(c, value, config)
 }
 
 func (a *Adaptor) resolve(c *gin.Context, info *relaycommon.RelayInfo) error {

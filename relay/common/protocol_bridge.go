@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	rootcommon "github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -13,11 +14,19 @@ import (
 // ApplyProtocolBridgeConfig copies explicitly allowed fields from the original
 // downstream JSON request into an already converted upstream JSON body.
 func ApplyProtocolBridgeConfig(c *gin.Context, target []byte, info *RelayInfo) ([]byte, error) {
-	if c == nil || info == nil || info.ChannelMeta == nil {
+	if info == nil || info.ChannelMeta == nil {
 		return target, nil
 	}
-	config := info.ChannelOtherSettings.ProtocolBridge
+	return ApplyProtocolBridgeFields(c, target, info.ChannelOtherSettings.ProtocolBridge)
+}
+
+// ApplyProtocolBridgeFields copies explicitly allowed fields from the original
+// downstream JSON request into an already converted upstream JSON body.
+func ApplyProtocolBridgeFields(c *gin.Context, target []byte, config *dto.ProtocolBridgeConfig) ([]byte, error) {
 	if config == nil || (len(config.PassthroughFields) == 0 && len(config.FieldMappings) == 0) {
+		return target, nil
+	}
+	if c == nil {
 		return target, nil
 	}
 	if err := config.Validate(); err != nil {
@@ -74,14 +83,33 @@ func copyProtocolBridgeJSONPath(target []byte, source []byte, sourcePath string,
 }
 
 func MarshalAndApplyProtocolBridge(c *gin.Context, value any, info *RelayInfo) (map[string]any, error) {
+	if info == nil || info.ChannelMeta == nil {
+		return marshalJSONObject(value)
+	}
+	return MarshalAndApplyProtocolBridgeFields(c, value, info.ChannelOtherSettings.ProtocolBridge)
+}
+
+func MarshalAndApplyProtocolBridgeFields(c *gin.Context, value any, config *dto.ProtocolBridgeConfig) (map[string]any, error) {
 	data, err := rootcommon.Marshal(value)
 	if err != nil {
 		return nil, err
 	}
-	data, err = ApplyProtocolBridgeConfig(c, data, info)
+	data, err = ApplyProtocolBridgeFields(c, data, config)
 	if err != nil {
 		return nil, err
 	}
+	return unmarshalJSONObject(data)
+}
+
+func marshalJSONObject(value any) (map[string]any, error) {
+	data, err := rootcommon.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	return unmarshalJSONObject(data)
+}
+
+func unmarshalJSONObject(data []byte) (map[string]any, error) {
 	var result map[string]any
 	if err := rootcommon.Unmarshal(data, &result); err != nil {
 		return nil, err
