@@ -86,10 +86,17 @@ func AsyncMediaEnqueue() gin.HandlerFunc {
 			RequestHeaders: string(headerJSON),
 			RequestFile:    requestFile,
 			RequestSize:    requestSize,
+			ModelName:      asyncMediaModelFromPath(c.Request.URL.Path),
 		}
 		if err := model.CreateAsyncMediaJob(job); err != nil {
 			_ = service.DeleteAsyncMediaPath(requestFile)
 			abortWithOpenAiMessage(c, http.StatusInternalServerError, "持久化异步媒体任务失败")
+			return
+		}
+		if err := model.CreateAsyncMediaTaskLog(job); err != nil {
+			_ = model.DeleteAsyncMediaJob(job.JobID)
+			_ = service.DeleteAsyncMediaPath(requestFile)
+			abortWithOpenAiMessage(c, http.StatusInternalServerError, "记录异步媒体任务日志失败")
 			return
 		}
 
@@ -116,6 +123,8 @@ func isAsyncMediaRequest(c *gin.Context) bool {
 		return true
 	case path == "/v1/videos" || path == "/v1/video/generations":
 		return true
+	case isGeminiGenerateContentPath(path):
+		return true
 	case strings.HasPrefix(path, "/kling/v1/videos/"):
 		return true
 	case path == "/jimeng" || path == "/jimeng/":
@@ -123,6 +132,22 @@ func isAsyncMediaRequest(c *gin.Context) bool {
 	default:
 		return false
 	}
+}
+
+func isGeminiGenerateContentPath(path string) bool {
+	if !strings.HasSuffix(path, ":generateContent") {
+		return false
+	}
+	return strings.HasPrefix(path, "/v1/models/") || strings.HasPrefix(path, "/v1beta/models/")
+}
+
+func asyncMediaModelFromPath(path string) string {
+	if !isGeminiGenerateContentPath(path) {
+		return ""
+	}
+	modelPath := strings.TrimPrefix(path, "/v1beta/models/")
+	modelPath = strings.TrimPrefix(modelPath, "/v1/models/")
+	return strings.TrimSuffix(modelPath, ":generateContent")
 }
 
 func shouldPersistAsyncMediaHeader(name string) bool {

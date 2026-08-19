@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"gorm.io/gorm"
 )
 
@@ -107,6 +108,57 @@ func CreateAsyncMediaJob(job *AsyncMediaJob) error {
 	return DB.Create(job).Error
 }
 
+func CreateAsyncMediaTaskLog(job *AsyncMediaJob) error {
+	return DB.Create(&Task{
+		AsyncJobID: job.JobID,
+		UserId:     job.UserID,
+		TaskID:     job.JobID,
+		Platform:   constant.TaskPlatformAsyncMedia,
+		Action:     constant.TaskActionAsyncMedia,
+		Status:     TaskStatusQueued,
+		Progress:   "0%",
+		SubmitTime: job.CreatedAt,
+		CreatedAt:  job.CreatedAt,
+		UpdatedAt:  job.UpdatedAt,
+		Properties: Properties{OriginModelName: job.ModelName},
+	}).Error
+}
+
+func DeleteAsyncMediaJob(jobID string) error {
+	return DB.Where("job_id = ?", jobID).Delete(&AsyncMediaJob{}).Error
+}
+
+func UpdateAsyncMediaTaskLog(jobID string, status AsyncMediaJobStatus, updates map[string]any) error {
+	taskUpdates := map[string]any{"updated_at": time.Now().Unix()}
+	switch status {
+	case AsyncMediaJobStatusRunning:
+		taskUpdates["status"] = TaskStatusInProgress
+		taskUpdates["progress"] = "10%"
+		taskUpdates["start_time"] = time.Now().Unix()
+	case AsyncMediaJobStatusWaitingUpstream:
+		taskUpdates["status"] = TaskStatusInProgress
+		taskUpdates["progress"] = "50%"
+	case AsyncMediaJobStatusSucceeded:
+		taskUpdates["status"] = TaskStatusSuccess
+		taskUpdates["progress"] = "100%"
+		taskUpdates["finish_time"] = time.Now().Unix()
+		taskUpdates["fail_reason"] = ""
+	case AsyncMediaJobStatusFailed:
+		taskUpdates["status"] = TaskStatusFailure
+		taskUpdates["progress"] = "100%"
+		taskUpdates["finish_time"] = time.Now().Unix()
+		if message, ok := updates["error"].(string); ok {
+			taskUpdates["fail_reason"] = message
+		}
+	}
+	if channelID, ok := updates["upstream_channel_id"]; ok {
+		taskUpdates["channel_id"] = channelID
+	}
+	return DB.Model(&Task{}).
+		Where("async_job_id = ? AND platform = ?", jobID, constant.TaskPlatformAsyncMedia).
+		Updates(taskUpdates).Error
+}
+
 func GetAsyncMediaJobForUser(jobID string, userID int) (*AsyncMediaJob, error) {
 	var job AsyncMediaJob
 	err := DB.Where("job_id = ? AND user_id = ?", jobID, userID).First(&job).Error
@@ -165,6 +217,7 @@ func ClaimNextAsyncMediaJob(workerID string, leaseUntil int64) (*AsyncMediaJob, 
 		if err := DB.Where("id = ?", candidate.ID).First(candidate).Error; err != nil {
 			return nil, false, err
 		}
+		_ = UpdateAsyncMediaTaskLog(candidate.JobID, AsyncMediaJobStatusRunning, updates)
 		candidate.Status = previousStatus
 		return candidate, true, nil
 	}
@@ -197,6 +250,15 @@ func UpdateAsyncMediaJob(jobID string, workerID string, updates map[string]any) 
 	if result.RowsAffected == 0 {
 		return errors.New("async media job lease lost")
 	}
+	status, _ := updates["status"].(AsyncMediaJobStatus)
+	if status == "" {
+		if value, ok := updates["status"].(string); ok {
+			status = AsyncMediaJobStatus(value)
+		}
+	}
+	if status != "" {
+		_ = UpdateAsyncMediaTaskLog(jobID, status, updates)
+	}
 	return nil
 }
 
@@ -218,7 +280,7 @@ func FindExpiredAsyncMediaFiles(now int64, limit int) ([]*AsyncMediaFile, error)
 }
 
 func MarkAsyncMediaFileDeleted(fileID string, deletedAt int64) error {
-	return DB.Model(&AsyncMediaFile{}).Where("file_id = ? AND deleted_at = 0").Update("deleted_at", deletedAt).Error
+	return DB.Model(&AsyncMediaFile{}).Where("file_id = ? AND deleted_at = 0", fileID).Update("deleted_at", deletedAt).Error
 }
 
 func MarkExpiredRunningAsyncMediaJobsFailed(now int64) error {

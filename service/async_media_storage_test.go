@@ -116,3 +116,26 @@ func TestAsyncMediaInternalSignatureCannotBeForgedWithJobIDAlone(t *testing.T) {
 	assert.False(t, ValidateAsyncMediaInternalRequest("job_other", signature))
 	assert.False(t, ValidateAsyncMediaInternalRequest("job_internal_contract", "job_internal_contract"))
 }
+
+func TestStoreAsyncMediaResultsExtractsGeminiInlineData(t *testing.T) {
+	truncate(t)
+	job := &model.AsyncMediaJob{JobID: "job_gemini_inline_data", UserID: 1}
+	responseFile, file, err := CreateAsyncMediaResponseFile(job.JobID)
+	require.NoError(t, err)
+	payload := `{"candidates":[{"content":{"parts":[{"text":"done"},{"inlineData":{"mimeType":"image/png","data":"` + base64.StdEncoding.EncodeToString([]byte("png-data")) + `"}}]}}]}`
+	_, err = file.WriteString(payload)
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+
+	files, err := StoreAsyncMediaResults(job, responseFile, "application/json")
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	assert.Equal(t, "image/png", files[0].MimeType)
+	assert.Equal(t, int64(len("png-data")), files[0].Size)
+	DeleteAsyncMediaFiles(files)
+}
+
+func TestExtractAsyncMediaMarkdownImageURLs(t *testing.T) {
+	assert.Equal(t, []string{"https://example.com/a.jpg", "http://example.com/b.png"}, extractAsyncMediaMarkdownImageURLs("![a](https://example.com/a.jpg) text ![b](http://example.com/b.png)"))
+	assert.Empty(t, extractAsyncMediaMarkdownImageURLs("[ordinary link](https://example.com/a.jpg)"))
+}

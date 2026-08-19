@@ -22,9 +22,13 @@ POST /v1/images/generations?async=true
 POST /v1/images/edits?async=true
 POST /v1/video/generations?async=true
 POST /v1/videos?async=true
+POST /v1/models/{model}:generateContent?async=true
+POST /v1beta/models/{model}:generateContent?async=true
 ```
 
 提交成功返回 HTTP 202、公开 `job_id` 和状态查询地址。客户端通过统一任务查询接口获取状态和结果。未携带 `async=true` 的请求保持原行为。
+
+Gemini 原生 `generateContent` 仅在显式携带 `async=true` 时进入统一异步媒体队列；流式 `streamGenerateContent` 保持同步流式行为。统一异步媒体任务仍以 `async_media_jobs` 为状态事实来源，同时映射到管理后台“任务日志”用于查看任务 ID、模型、状态、耗时和失败原因。映射记录不参与原生视频/Suno 任务轮询，同一异步任务产生的内部上游任务记录不会重复展示。
 
 ### 2. 数据库是任务事实来源
 

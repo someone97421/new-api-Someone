@@ -2133,6 +2133,8 @@
     "Generate and manage your API access token": "Tạo và quản lý mã thông báo truy cập API của bạn",
     "Generate Lyrics": "Tạo lời bài hát",
     "Generate Music": "Tạo nhạc",
+    "Async media": "Phương tiện bất đồng bộ",
+    "Async media generation": "Tạo phương tiện bất đồng bộ",
     "Generate new backup codes for account recovery": "Tạo mã dự phòng mới để khôi phục tài khoản",
     "Generate New Codes": "Tạo mã mới",
     "Generate tokens from the Tokens page; you can scope them to specific models, groups, IPs, and rate-limits.": "Tạo token tại trang Tokens; bạn có thể giới hạn theo model, nhóm, IP và rate-limit.",

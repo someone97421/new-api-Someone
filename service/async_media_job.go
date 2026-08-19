@@ -285,7 +285,7 @@ func processAsyncMediaRelayRequest(handler http.Handler, workerID string, job *m
 	_ = DeleteAsyncMediaPath(job.RequestFile)
 	_ = DeleteAsyncMediaPath(responsePath)
 	completedAt := time.Now().Unix()
-	if err := model.UpdateAsyncMediaJob(job.JobID, workerID, map[string]any{
+	updates := map[string]any{
 		"status":           model.AsyncMediaJobStatusSucceeded,
 		"billing_status":   model.AsyncMediaBillingSettled,
 		"http_status":      writer.status,
@@ -293,7 +293,11 @@ func processAsyncMediaRelayRequest(handler http.Handler, workerID string, job *m
 		"response_file":    "",
 		"completed_at":     completedAt,
 		"expires_at":       completedAt + int64(constant.AsyncMediaRetentionHours)*3600,
-	}); err != nil {
+	}
+	if channelID, parseErr := strconv.Atoi(strings.TrimSpace(writer.header.Get(AsyncMediaInternalChannelHeader))); parseErr == nil && channelID > 0 {
+		updates["upstream_channel_id"] = channelID
+	}
+	if err := model.UpdateAsyncMediaJob(job.JobID, workerID, updates); err != nil {
 		logger.LogError(context.Background(), fmt.Sprintf("异步媒体任务成功状态写入失败 job=%s: %v", job.JobID, err))
 	}
 }
@@ -524,11 +528,7 @@ func processStoredAsyncMediaResponse(workerID string, job *model.AsyncMediaJob) 
 		if err == nil {
 			err = fmt.Errorf("上游响应中没有可转存的图片或视频")
 		}
-		_ = model.UpdateAsyncMediaJob(job.JobID, workerID, map[string]any{
-			"status":      model.AsyncMediaJobStatusWaitingUpstream,
-			"error":       err.Error(),
-			"next_run_at": time.Now().Unix() + 30,
-		})
+		failAsyncMediaJob(workerID, job, http.StatusBadGateway, err.Error(), model.AsyncMediaBillingReconciliationPending)
 		return
 	}
 	if err := model.CreateAsyncMediaFiles(files); err != nil {

@@ -2133,6 +2133,8 @@
     "Generate and manage your API access token": "Générer et gérer votre jeton d'accès API",
     "Generate Lyrics": "Générer des paroles",
     "Generate Music": "Générer de la musique",
+    "Async media": "Média asynchrone",
+    "Async media generation": "Génération de média asynchrone",
     "Generate new backup codes for account recovery": "Générer de nouveaux codes de secours pour la récupération du compte",
     "Generate New Codes": "Générer de nouveaux codes",
     "Generate tokens from the Tokens page; you can scope them to specific models, groups, IPs, and rate-limits.": "Générez des jetons depuis la page Jetons ; vous pouvez les restreindre par modèle, groupe, IP et limites de débit.",

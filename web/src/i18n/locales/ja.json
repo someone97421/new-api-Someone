@@ -2133,6 +2133,8 @@
     "Generate and manage your API access token": "API アクセス トークンを生成および管理",
     "Generate Lyrics": "歌詞を生成",
     "Generate Music": "音楽を生成",
+    "Async media": "非同期メディア",
+    "Async media generation": "非同期メディア生成",
     "Generate new backup codes for account recovery": "アカウント復旧用の新しいバックアップコードを生成",
     "Generate New Codes": "新しいコードを生成",
     "Generate tokens from the Tokens page; you can scope them to specific models, groups, IPs, and rate-limits.": "トークンページから API キーを発行できます。モデル、グループ、IP、レート制限ごとに細かく権限を設定可能です。",

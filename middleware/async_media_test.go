@@ -25,6 +25,9 @@ func TestAsyncMediaRequestOnlyInterceptsSupportedPostEndpoints(t *testing.T) {
 		{name: "image JSON", method: http.MethodPost, url: "/v1/images/generations?async=true", want: true},
 		{name: "image multipart", method: http.MethodPost, url: "/v1/images/edits?async=1", want: true},
 		{name: "video", method: http.MethodPost, url: "/v1/videos?async=true", want: true},
+		{name: "Gemini v1 image", method: http.MethodPost, url: "/v1/models/gemini-3.1-flash-image:generateContent?async=true", want: true},
+		{name: "Gemini v1beta image", method: http.MethodPost, url: "/v1beta/models/gemini-3.1-flash-image:generateContent?async=1", want: true},
+		{name: "Gemini stream remains sync", method: http.MethodPost, url: "/v1/models/gemini-3.1-flash-image:streamGenerateContent?async=true", want: false},
 		{name: "sync remains sync", method: http.MethodPost, url: "/v1/images/generations", want: false},
 		{name: "unsupported chat", method: http.MethodPost, url: "/v1/chat/completions?async=true", want: false},
 		{name: "status query", method: http.MethodGet, url: "/v1/images/generations/task?async=true", want: false},
@@ -38,6 +41,19 @@ func TestAsyncMediaRequestOnlyInterceptsSupportedPostEndpoints(t *testing.T) {
 			assert.Equal(t, test.want, test.method == http.MethodPost && isAsyncMediaRequest(context))
 		})
 	}
+}
+
+func TestAsyncMediaModelFromGeminiPath(t *testing.T) {
+	assert.Equal(t, "gemini-3.1-flash-image", asyncMediaModelFromPath("/v1/models/gemini-3.1-flash-image:generateContent"))
+	assert.Equal(t, "gemini-3-pro-image", asyncMediaModelFromPath("/v1beta/models/gemini-3-pro-image:generateContent"))
+	assert.Empty(t, asyncMediaModelFromPath("/v1/images/generations"))
+}
+
+func TestGeminiGenerateContentPathRequiresExactAction(t *testing.T) {
+	assert.True(t, isGeminiGenerateContentPath("/v1/models/gemini-3.1-flash-image:generateContent"))
+	assert.True(t, isGeminiGenerateContentPath("/v1beta/models/gemini-3-pro-image:generateContent"))
+	assert.False(t, isGeminiGenerateContentPath("/v1/models/gemini-3.1-flash-image:streamGenerateContent"))
+	assert.False(t, isGeminiGenerateContentPath("/v1/models/gemini-3.1-flash-image:countTokens"))
 }
 
 func TestAsyncMediaInternalRequestBindsUpstreamChannel(t *testing.T) {

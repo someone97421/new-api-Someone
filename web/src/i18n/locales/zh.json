@@ -2133,6 +2133,8 @@
     "Generate and manage your API access token": "生成和管理您的 API 访问令牌",
     "Generate Lyrics": "生成歌词",
     "Generate Music": "生成音乐",
+    "Async media": "异步媒体",
+    "Async media generation": "异步媒体生成",
     "Generate new backup codes for account recovery": "生成新的备份代码用于账户恢复",
     "Generate New Codes": "生成新代码",
     "Generate tokens from the Tokens page; you can scope them to specific models, groups, IPs, and rate-limits.": "在「令牌」页面生成 API Key，可以按模型、分组、IP、速率等维度精细化授权。",

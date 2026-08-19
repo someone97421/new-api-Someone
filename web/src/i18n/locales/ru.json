@@ -2133,6 +2133,8 @@
     "Generate and manage your API access token": "Генерировать и управлять вашим токеном доступа API",
     "Generate Lyrics": "Создать текст песни",
     "Generate Music": "Создать музыку",
+    "Async media": "Асинхронные медиа",
+    "Async media generation": "Асинхронная генерация медиа",
     "Generate new backup codes for account recovery": "Сгенерировать новые резервные коды для восстановления аккаунта",
     "Generate New Codes": "Сгенерировать новые коды",
     "Generate tokens from the Tokens page; you can scope them to specific models, groups, IPs, and rate-limits.": "Создавайте токены на странице «Токены». Их можно ограничить моделями, группами, IP и лимитами частоты.",

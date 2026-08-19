@@ -2133,6 +2133,8 @@
     "Generate and manage your API access token": "Generate and manage your API access token",
     "Generate Lyrics": "Generate Lyrics",
     "Generate Music": "Generate Music",
+    "Async media": "Async media",
+    "Async media generation": "Async media generation",
     "Generate new backup codes for account recovery": "Generate new backup codes for account recovery",
     "Generate New Codes": "Generate New Codes",
     "Generate tokens from the Tokens page; you can scope them to specific models, groups, IPs, and rate-limits.": "Generate tokens from the Tokens page; you can scope them to specific models, groups, IPs, and rate-limits.",

@@ -202,6 +202,25 @@ func collectAsyncMediaValues(job *model.AsyncMediaJob, value any, key string, se
 	switch typed := value.(type) {
 	case map[string]any:
 		for childKey, child := range typed {
+			lowerChildKey := strings.ToLower(childKey)
+			if lowerChildKey == "inlinedata" || lowerChildKey == "inline_data" {
+				if inlineData, ok := child.(map[string]any); ok {
+					encoded, _ := inlineData["data"].(string)
+					mediaType, _ := inlineData["mimeType"].(string)
+					if mediaType == "" {
+						mediaType, _ = inlineData["mime_type"].(string)
+					}
+					if encoded != "" && !seen[encoded] {
+						stored, err := storeAsyncMediaBase64(job, encoded, mediaType)
+						if err != nil {
+							return err
+						}
+						seen[encoded] = true
+						*files = append(*files, stored)
+					}
+					continue
+				}
+			}
 			if err := collectAsyncMediaValues(job, child, strings.ToLower(childKey), seen, files); err != nil {
 				return err
 			}
@@ -215,6 +234,17 @@ func collectAsyncMediaValues(job *model.AsyncMediaJob, value any, key string, se
 	case string:
 		if typed == "" || seen[typed] {
 			return nil
+		}
+		for _, imageURL := range extractAsyncMediaMarkdownImageURLs(typed) {
+			if seen[imageURL] {
+				continue
+			}
+			stored, err := downloadAsyncMediaResult(job, imageURL)
+			if err != nil {
+				return err
+			}
+			seen[imageURL] = true
+			*files = append(*files, stored)
 		}
 		if strings.HasPrefix(typed, "data:image/") || strings.HasPrefix(typed, "data:video/") {
 			stored, err := storeAsyncMediaDataURI(job, typed)
@@ -244,6 +274,31 @@ func collectAsyncMediaValues(job *model.AsyncMediaJob, value any, key string, se
 		}
 	}
 	return nil
+}
+
+func extractAsyncMediaMarkdownImageURLs(text string) []string {
+	urls := make([]string, 0, 1)
+	for {
+		start := strings.Index(text, "![")
+		if start < 0 {
+			break
+		}
+		open := strings.Index(text[start:], "](")
+		if open < 0 {
+			break
+		}
+		open += start + 2
+		close := strings.IndexByte(text[open:], ')')
+		if close < 0 {
+			break
+		}
+		url := strings.TrimSpace(text[open : open+close])
+		if strings.HasPrefix(url, "https://") || strings.HasPrefix(url, "http://") {
+			urls = append(urls, url)
+		}
+		text = text[open+close+1:]
+	}
+	return urls
 }
 
 func isAsyncMediaURLKey(key string) bool {

@@ -185,6 +185,7 @@ export const TASK_ACTIONS = {
   FIRST_TAIL_GENERATE: 'firstTailGenerate', // 首尾生视频
   REFERENCE_GENERATE: 'referenceGenerate', // 参照生视频
   REMIX_GENERATE: 'remixGenerate', // 视频 Remix
+  ASYNC_MEDIA_GENERATE: 'asyncMediaGenerate', // 统一异步媒体
 } as const
 
 /**
@@ -209,6 +210,7 @@ export const TASK_PLATFORMS = {
   RUNWAY: 'runway',
   LUMA: 'luma',
   VIGGLE: 'viggle',
+  ASYNC_MEDIA: 'async_media',
 } as const
 
 // ============================================================================
@@ -300,6 +302,10 @@ export const TASK_ACTION_MAPPINGS: Record<string, StatusMapping> = {
     label: 'Video Remix',
     variant: 'blue',
   },
+  [TASK_ACTIONS.ASYNC_MEDIA_GENERATE]: {
+    label: 'Async media generation',
+    variant: 'cyan',
+  },
 }
 
 /**
@@ -324,6 +330,10 @@ export const TASK_PLATFORM_MAPPINGS: Record<string, StatusMapping> = {
   [TASK_PLATFORMS.RUNWAY]: { label: 'runway', variant: 'violet' },
   [TASK_PLATFORMS.LUMA]: { label: 'luma', variant: 'orange' },
   [TASK_PLATFORMS.VIGGLE]: { label: 'viggle', variant: 'pink' },
+  [TASK_PLATFORMS.ASYNC_MEDIA]: {
+    label: 'Async media',
+    variant: 'cyan',
+  },
 }
 
 // ============================================================================

@@ -74,7 +74,9 @@ type Task struct {
 
 func GetTaskByAsyncJobID(asyncJobID string) (*Task, error) {
 	var task Task
-	err := DB.Where("async_job_id = ?", asyncJobID).Order("id desc").First(&task).Error
+	err := DB.Where("async_job_id = ?", asyncJobID).
+		Where("platform != ?", constant.TaskPlatformAsyncMedia).
+		Order("id desc").First(&task).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
@@ -234,6 +236,7 @@ func TaskGetAllUserTask(userId int, startIdx int, num int, queryParams SyncTaskQ
 
 	// 初始化查询构建器
 	query := DB.Where("user_id = ?", userId)
+	query = query.Where("platform = ? OR async_job_id IS NULL OR async_job_id = ''", constant.TaskPlatformAsyncMedia)
 
 	if queryParams.TaskID != "" {
 		query = query.Where("task_id = ?", queryParams.TaskID)
@@ -270,6 +273,7 @@ func TaskGetAllTasks(startIdx int, num int, queryParams SyncTaskQueryParams) []*
 
 	// 初始化查询构建器
 	query := DB
+	query = query.Where("platform = ? OR async_job_id IS NULL OR async_job_id = ''", constant.TaskPlatformAsyncMedia)
 
 	// 添加过滤条件
 	if queryParams.ChannelID != "" {
@@ -313,6 +317,7 @@ func GetTimedOutUnfinishedTasks(cutoffUnix int64, limit int) []*Task {
 	var tasks []*Task
 	err := DB.Where("progress != ?", "100%").
 		Where("status NOT IN ?", []string{TaskStatusFailure, TaskStatusSuccess}).
+		Where("platform != ?", constant.TaskPlatformAsyncMedia).
 		Where("submit_time < ?", cutoffUnix).
 		Order("submit_time").
 		Limit(limit).
@@ -327,7 +332,11 @@ func GetAllUnFinishSyncTasks(limit int) []*Task {
 	var tasks []*Task
 	var err error
 	// get all tasks progress is not 100%
-	err = DB.Where("progress != ?", "100%").Where("status != ?", TaskStatusFailure).Where("status != ?", TaskStatusSuccess).Limit(limit).Order("id").Find(&tasks).Error
+	err = DB.Where("progress != ?", "100%").
+		Where("status != ?", TaskStatusFailure).
+		Where("status != ?", TaskStatusSuccess).
+		Where("platform != ?", constant.TaskPlatformAsyncMedia).
+		Limit(limit).Order("id").Find(&tasks).Error
 	if err != nil {
 		return nil
 	}
@@ -344,6 +353,7 @@ func HasUnfinishedSyncTasks() bool {
 		Where("progress != ?", "100%").
 		Where("status != ?", TaskStatusFailure).
 		Where("status != ?", TaskStatusSuccess).
+		Where("platform != ?", constant.TaskPlatformAsyncMedia).
 		Limit(1).
 		Pluck("id", &id).Error
 	return err == nil && id != 0
@@ -469,6 +479,7 @@ type TaskQuotaUsage struct {
 func TaskCountAllTasks(queryParams SyncTaskQueryParams) int64 {
 	var total int64
 	query := DB.Model(&Task{})
+	query = query.Where("platform = ? OR async_job_id IS NULL OR async_job_id = ''", constant.TaskPlatformAsyncMedia)
 	if queryParams.ChannelID != "" {
 		query = query.Where("channel_id = ?", queryParams.ChannelID)
 	}
@@ -504,6 +515,7 @@ func TaskCountAllTasks(queryParams SyncTaskQueryParams) int64 {
 func TaskCountAllUserTask(userId int, queryParams SyncTaskQueryParams) int64 {
 	var total int64
 	query := DB.Model(&Task{}).Where("user_id = ?", userId)
+	query = query.Where("platform = ? OR async_job_id IS NULL OR async_job_id = ''", constant.TaskPlatformAsyncMedia)
 	if queryParams.TaskID != "" {
 		query = query.Where("task_id = ?", queryParams.TaskID)
 	}
