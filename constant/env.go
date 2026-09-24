@@ -24,7 +24,18 @@ var TaskPluginProtocolTickMilliseconds int
 var TaskPluginProtocolTickJitterMilliseconds int
 var TaskPluginProtocolHeartbeatSeconds int
 
+// Explicit asynchronous media jobs (POST /v1/images/*?async=true). Only a
+// request that carries the explicit flag enters the queue; the synchronous
+// contract of the same endpoint is unchanged.
+var AsyncMediaEnabled = true
+var AsyncMediaDir string
+var AsyncMediaRetentionHours int
+var AsyncMediaWorkers int
+var AsyncMediaMaxRequestMB int
+var AsyncMediaStaleMinutes int
+
 // temporary variable for sora patch, will be removed in future
+
 var TaskPricePatches []string
 
 // TrustedRedirectDomains is a list of trusted domains for redirect URL validation.

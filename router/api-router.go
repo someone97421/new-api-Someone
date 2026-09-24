@@ -369,6 +369,9 @@ func SetApiRouter(router *gin.Engine) {
 		taskRoute := apiRouter.Group("/task")
 		{
 			taskRoute.GET("/self", middleware.UserAuth(), controller.GetUserTask)
+			// Explicit asynchronous media jobs are accepted on the image endpoints and
+			// read back separately; the list is an administrative view.
+			taskRoute.GET("/async", middleware.AdminAuth(), controller.ListAsyncMediaJobs)
 			taskRoute.GET("", middleware.AdminAuth(), controller.GetAllTask)
 			taskRoute.GET("/:task_id/artifacts", middleware.UserAuth(), controller.GetDashboardTaskArtifacts)
 			taskRoute.GET("/:task_id/data", middleware.AdminAuth(), controller.GetDashboardTaskData)

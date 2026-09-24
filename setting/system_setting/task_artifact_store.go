@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode"
@@ -14,21 +15,29 @@ import (
 
 const (
 	TaskArtifactStoreModeUpstream = "upstream"
+	TaskArtifactStoreModeLocal    = "local"
 	TaskArtifactStoreModeS3       = "s3"
 
 	DefaultTaskArtifactStorePresignTTLSeconds = 900
 	MaxTaskArtifactStorePresignTTLSeconds     = 7 * 24 * 60 * 60
+
+	DefaultTaskArtifactStoreLocalDir       = "./data/task-artifacts"
+	DefaultTaskArtifactStoreRetentionHours = 168
+	MinTaskArtifactStoreRetentionHours     = 1
+	MaxTaskArtifactStoreRetentionHours     = 8760
 )
 
 const (
-	TaskArtifactStoreModeEnv         = "TASK_ARTIFACT_STORE_MODE"
-	TaskArtifactStoreS3EndpointEnv   = "TASK_ARTIFACT_STORE_S3_ENDPOINT"
-	TaskArtifactStoreS3BucketEnv     = "TASK_ARTIFACT_STORE_S3_BUCKET"
-	TaskArtifactStoreS3RegionEnv     = "TASK_ARTIFACT_STORE_S3_REGION"
-	TaskArtifactStoreS3AccessKeyEnv  = "TASK_ARTIFACT_STORE_S3_ACCESS_KEY"
-	TaskArtifactStoreS3SecretKeyEnv  = "TASK_ARTIFACT_STORE_S3_SECRET_KEY"
-	TaskArtifactStoreS3PrefixEnv     = "TASK_ARTIFACT_STORE_S3_PREFIX"
-	TaskArtifactStoreS3PresignTTLEnv = "TASK_ARTIFACT_STORE_S3_PRESIGN_TTL"
+	TaskArtifactStoreModeEnv           = "TASK_ARTIFACT_STORE_MODE"
+	TaskArtifactStoreLocalDirEnv       = "TASK_ARTIFACT_STORE_LOCAL_DIR"
+	TaskArtifactStoreRetentionHoursEnv = "TASK_ARTIFACT_STORE_RETENTION_HOURS"
+	TaskArtifactStoreS3EndpointEnv     = "TASK_ARTIFACT_STORE_S3_ENDPOINT"
+	TaskArtifactStoreS3BucketEnv       = "TASK_ARTIFACT_STORE_S3_BUCKET"
+	TaskArtifactStoreS3RegionEnv       = "TASK_ARTIFACT_STORE_S3_REGION"
+	TaskArtifactStoreS3AccessKeyEnv    = "TASK_ARTIFACT_STORE_S3_ACCESS_KEY"
+	TaskArtifactStoreS3SecretKeyEnv    = "TASK_ARTIFACT_STORE_S3_SECRET_KEY"
+	TaskArtifactStoreS3PrefixEnv       = "TASK_ARTIFACT_STORE_S3_PREFIX"
+	TaskArtifactStoreS3PresignTTLEnv   = "TASK_ARTIFACT_STORE_S3_PRESIGN_TTL"
 )
 
 var (
@@ -36,10 +45,12 @@ var (
 	taskArtifactStoreRegionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 )
 
-// TaskArtifactStoreConfig reserves the configuration contract for a future S3
-// implementation. The current release always falls back to upstream proxying.
+// TaskArtifactStoreConfig reserves the configuration contract for storage
+// backends (local and future S3).
 type TaskArtifactStoreConfig struct {
 	Mode                string
+	LocalDir            string
+	RetentionHours      int
 	S3Endpoint          string
 	S3Bucket            string
 	S3Region            string
@@ -54,6 +65,8 @@ type TaskArtifactStoreConfig struct {
 func LoadTaskArtifactStoreConfig() TaskArtifactStoreConfig {
 	config := TaskArtifactStoreConfig{
 		Mode:                common.GetEnvOrDefaultString(TaskArtifactStoreModeEnv, TaskArtifactStoreModeUpstream),
+		LocalDir:            common.GetEnvOrDefaultString(TaskArtifactStoreLocalDirEnv, DefaultTaskArtifactStoreLocalDir),
+		RetentionHours:      common.GetEnvOrDefault(TaskArtifactStoreRetentionHoursEnv, DefaultTaskArtifactStoreRetentionHours),
 		S3Endpoint:          common.GetEnvOrDefaultString(TaskArtifactStoreS3EndpointEnv, ""),
 		S3Bucket:            common.GetEnvOrDefaultString(TaskArtifactStoreS3BucketEnv, ""),
 		S3Region:            common.GetEnvOrDefaultString(TaskArtifactStoreS3RegionEnv, ""),
@@ -77,8 +90,24 @@ func LoadTaskArtifactStoreConfig() TaskArtifactStoreConfig {
 // ValidateTaskArtifactStoreConfig performs syntax checks only. It never
 // resolves hosts, contacts an endpoint, or verifies credentials.
 func ValidateTaskArtifactStoreConfig(config TaskArtifactStoreConfig) error {
-	if config.Mode != TaskArtifactStoreModeUpstream && config.Mode != TaskArtifactStoreModeS3 {
+	if config.Mode != TaskArtifactStoreModeUpstream && config.Mode != TaskArtifactStoreModeS3 && config.Mode != TaskArtifactStoreModeLocal {
 		return fmt.Errorf("unsupported mode %q", config.Mode)
+	}
+	if config.Mode == TaskArtifactStoreModeLocal {
+		trimmedDir := strings.TrimSpace(config.LocalDir)
+		if trimmedDir == "" {
+			return errors.New("local dir is required")
+		}
+		if strings.Contains(trimmedDir, "..") {
+			return errors.New("local dir must not contain '..'")
+		}
+		cleaned := filepath.Clean(trimmedDir)
+		if cleaned == "/" || cleaned == "\\" || filepath.Dir(cleaned) == cleaned {
+			return errors.New("local dir must not be root directory")
+		}
+		if config.RetentionHours < MinTaskArtifactStoreRetentionHours || config.RetentionHours > MaxTaskArtifactStoreRetentionHours {
+			return fmt.Errorf("retention hours must be between %d and %d", MinTaskArtifactStoreRetentionHours, MaxTaskArtifactStoreRetentionHours)
+		}
 	}
 	if config.S3PresignTTLSeconds <= 0 || config.S3PresignTTLSeconds > MaxTaskArtifactStorePresignTTLSeconds {
 		return fmt.Errorf("S3 presign TTL must be between 1 and %d seconds", MaxTaskArtifactStorePresignTTLSeconds)

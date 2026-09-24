@@ -377,6 +377,21 @@ func GetTimedOutUnfinishedTasks(cutoffUnix int64, limit int) []*Task {
 	return tasks
 }
 
+// ListTerminalTasksForArtifactArchive queries terminal successful tasks for artifact archival.
+// It is database-agnostic using standard GORM queries with existing indexed columns.
+func ListTerminalTasksForArtifactArchive(cutoffUnix int64, limit int) []*Task {
+	var tasks []*Task
+	err := DB.Where("status = ?", TaskStatusSuccess).
+		Where("finish_time >= ?", cutoffUnix).
+		Order("finish_time").
+		Limit(limit).
+		Find(&tasks).Error
+	if err != nil {
+		return nil
+	}
+	return tasks
+}
+
 func GetAllUnFinishSyncTasks(limit int) []*Task {
 	var tasks []*Task
 	var err error

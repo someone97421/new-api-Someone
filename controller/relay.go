@@ -708,6 +708,10 @@ func executeTaskSubmissionWith(
 }
 
 func presentTaskSubmission(c *gin.Context, outcome *taskSubmissionOutcome) {
+	// The public task id is echoed for the accepted asynchronous media job that
+	// replayed this request; it is the caller's own task identity, never an
+	// upstream id or credential.
+	c.Header("X-New-Api-Task-Id", outcome.Task.TaskID)
 	diagnostics := newTaskPluginSubmitDiagnostics(c)
 	otherRatios := outcome.RelayInfo.PriceData.OtherRatios()
 	if otherRatios == nil {

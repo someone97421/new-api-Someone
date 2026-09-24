@@ -22,6 +22,8 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(modelUpdateHandler{})
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
+	service.RegisterSystemTaskHandler(taskArtifactArchiveHandler{})
+	service.RegisterSystemTaskHandler(asyncMediaJobHandler{})
 }
 
 // channelTestHandler runs the scheduled "test all channels" job. Enablement and
@@ -149,6 +151,24 @@ func (asyncTaskPollHandler) NewPayload() any { return nil }
 
 func (asyncTaskPollHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
 	summary := service.RunTaskPollingOnce(ctx, service.NewSystemTaskProgressReporter(task, runnerID))
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+}
+
+// asyncMediaJobHandler executes accepted explicit asynchronous media jobs. Each
+// job is replayed through the ordinary image endpoint, so the official relay
+// path keeps owning channel selection, retries, billing and settlement.
+type asyncMediaJobHandler struct{}
+
+func (asyncMediaJobHandler) Type() string { return model.SystemTaskTypeAsyncMediaJob }
+
+func (asyncMediaJobHandler) Enabled() bool { return constant.AsyncMediaEnabled }
+
+func (asyncMediaJobHandler) Interval() time.Duration { return 5 * time.Second }
+
+func (asyncMediaJobHandler) NewPayload() any { return nil }
+
+func (asyncMediaJobHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	summary := service.RunAsyncMediaJobsOnce(ctx)
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 

@@ -16,7 +16,7 @@ var expectedKeys = []string{"alibaba", "doubao", "google", "hailuo", "jimeng", "
 
 // extraPluginKeys covers built-in plugins that claim host protocols without
 // declaring native vendor routes or a legacy channel type.
-var extraPluginKeys = []string{"gemini-image"}
+var extraPluginKeys = []string{"gemini-image", "openai-task-image", "openai-task-video"}
 
 func expectedPluginKeys() []string {
 	keys := append(append([]string(nil), expectedKeys...), extraPluginKeys...)

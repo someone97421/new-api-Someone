@@ -30,6 +30,11 @@ type TaskArtifactStore interface {
 	Serve(c *gin.Context, task *model.Task, ref *StoredArtifactRef) error
 }
 
+// ArtifactCleaner is implemented by storage backends that support expired artifact cleanup.
+type ArtifactCleaner interface {
+	CleanExpired(ctx context.Context) (int, error)
+}
+
 var ErrTaskArtifactStoreDisabled = errors.New("task artifact store is disabled")
 
 type disabledArtifactStore struct{}
@@ -52,12 +57,30 @@ func (disabledArtifactStore) Serve(*gin.Context, *model.Task, *StoredArtifactRef
 
 var taskArtifactStore TaskArtifactStore = &disabledArtifactStore{}
 
-func init() {
-	_ = system_setting.LoadTaskArtifactStoreConfig()
+// InitTaskArtifactStore initializes the process-wide artifact store from configuration.
+func InitTaskArtifactStore(cfg system_setting.TaskArtifactStoreConfig) {
+	if cfg.Mode == system_setting.TaskArtifactStoreModeLocal {
+		taskArtifactStore = NewLocalArtifactStore(cfg.LocalDir, cfg.RetentionHours)
+	} else {
+		taskArtifactStore = &disabledArtifactStore{}
+	}
 }
 
-// GetTaskArtifactStore returns the process-wide artifact storage backend. This
-// release always returns the disabled implementation.
+// SetTaskArtifactStore explicitly sets the process-wide store instance (e.g. for testing).
+func SetTaskArtifactStore(store TaskArtifactStore) {
+	if store == nil {
+		taskArtifactStore = &disabledArtifactStore{}
+		return
+	}
+	taskArtifactStore = store
+}
+
+func init() {
+	cfg := system_setting.LoadTaskArtifactStoreConfig()
+	InitTaskArtifactStore(cfg)
+}
+
+// GetTaskArtifactStore returns the process-wide artifact storage backend.
 func GetTaskArtifactStore() TaskArtifactStore {
 	return taskArtifactStore
 }

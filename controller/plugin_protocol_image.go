@@ -94,6 +94,10 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 		return
 	}
 	task := outcome.Task
+	// The accepted asynchronous media job that replayed this request learns the
+	// official task row from this header; the OpenAI Images body itself carries no
+	// task identity.
+	c.Header("X-New-Api-Task-Id", task.TaskID)
 	if task.Status != model.TaskStatusSuccess && task.Status != model.TaskStatusFailure {
 		if taskErr = waitTaskPluginImageTask(c, task, deps); taskErr != nil {
 			if c.Request.Context().Err() == nil {
