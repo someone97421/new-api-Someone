@@ -205,6 +205,12 @@ function extractImageEntries(data) {
     if (Array.isArray(list) && list.length > 0) {
       for (const item of list) addEntry(item);
       if (entries.length > 0) return entries;
+    } else if (list && typeof list === "object") {
+      // An object-shaped container is one image; entry counting must never rely
+      // on array structure alone.
+      const before = entries.length;
+      addEntry(list);
+      if (entries.length > before) return entries;
     }
   }
 
@@ -326,11 +332,11 @@ function countImagePayloads(body) {
     body.output && body.output.data,
     body.output && body.output.images,
   ];
-  for (const arr of candidates) {
-    if (Array.isArray(arr) && arr.length > 0) {
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate) && candidate.length > 0) {
       let urlCount = 0;
       let b64Count = 0;
-      for (const item of arr) {
+      for (const item of candidate) {
         if (item && typeof item === "object") {
           if (trimmed(item.url)) urlCount++;
           if (trimmed(item.b64_json)) b64Count++;
@@ -340,6 +346,10 @@ function countImagePayloads(body) {
       }
       const total = Math.max(urlCount, b64Count);
       if (total > 0) return total;
+    } else if (candidate && typeof candidate === "object") {
+      // An object-shaped container bills once; payload-less containers bill
+      // nothing.
+      if (trimmed(candidate.url) || trimmed(candidate.b64_json)) return 1;
     }
   }
   const directUrl = trimmed(body.url || (body.output && body.output.url));

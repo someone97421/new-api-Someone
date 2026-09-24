@@ -137,14 +137,14 @@ func TestAsyncMediaJobQueueLifecycle(t *testing.T) {
 
 	// A job whose worker disappeared is failed for reconciliation, never replayed.
 	require.NoError(t, model.CompleteAsyncMediaJob(second, model.AsyncMediaJobStatusRunning, "", 0, "", "", "", "", now, 0))
-	recovered := model.RecoverStaleAsyncMediaJobs(now+1, now+2)
+	recovered := model.RecoverStaleAsyncMediaJobs(now+1, now+2, now+3)
 	assert.EqualValues(t, 1, recovered)
 	abandoned, err := model.GetAsyncMediaJob("job_second")
 	require.NoError(t, err)
 	assert.Equal(t, model.AsyncMediaJobStatusFailed, abandoned.Status)
 	assert.Equal(t, model.AsyncMediaBillingReconciliationPending, abandoned.BillingStatus)
 	assert.Contains(t, abandoned.Error, "not replayed automatically")
-	assert.EqualValues(t, 0, model.RecoverStaleAsyncMediaJobs(now+1, now+2))
+	assert.EqualValues(t, 0, model.RecoverStaleAsyncMediaJobs(now+1, now+2, now+3))
 
 	// Expired responses are purged while the audit row stays.
 	expired := &model.AsyncMediaJob{

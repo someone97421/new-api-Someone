@@ -154,7 +154,7 @@ func ClaimQueuedAsyncMediaJobs(now int64, limit int) []*AsyncMediaJob {
 // replayed: the upstream call may already have started, and a silent retry could
 // generate and bill twice. The operator reconciles them like an interrupted
 // synchronous submission.
-func RecoverStaleAsyncMediaJobs(staleBefore int64, now int64) int64 {
+func RecoverStaleAsyncMediaJobs(staleBefore int64, now int64, expiresAt int64) int64 {
 	result := DB.Model(&AsyncMediaJob{}).
 		Where("status = ?", AsyncMediaJobStatusRunning).
 		Where("started_at > 0 AND started_at < ?", staleBefore).
@@ -164,6 +164,9 @@ func RecoverStaleAsyncMediaJobs(staleBefore int64, now int64) int64 {
 			"error":          "worker interrupted after the upstream call may have started; the job is not replayed automatically",
 			"completed_at":   now,
 			"updated_at":     now,
+			// A recovered job keeps its accepted request for diagnosis, so the
+			// retention deadline has to start here as well.
+			"expires_at": expiresAt,
 		})
 	if result.Error != nil {
 		common.SysError("recover stale async media jobs failed: " + result.Error.Error())
@@ -219,7 +222,7 @@ func ListExpiredAsyncMediaJobs(now int64, limit int) []*AsyncMediaJob {
 		return nil
 	}
 	var jobs []*AsyncMediaJob
-	if err := DB.Where("expires_at > 0 AND expires_at < ? AND response_file <> ''", now).
+	if err := DB.Where("expires_at > 0 AND expires_at < ? AND (response_file <> '' OR request_file <> '')", now).
 		Order("expires_at").
 		Limit(limit).
 		Find(&jobs).Error; err != nil {

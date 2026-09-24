@@ -382,8 +382,12 @@ func TaskArtifactContent(c *gin.Context) {
 	}
 	artifactStore := service.GetTaskArtifactStore()
 	if ref, resolveErr := artifactStore.Resolve(task, artifactKey); resolveErr == nil && ref != nil {
-		_ = artifactStore.Serve(c, task, ref)
-		return
+		// A stored copy can disappear between Resolve and Serve (retention cleanup).
+		// Falling back to the upstream proxy is only possible while nothing has been
+		// written yet, so a partially written response is never restarted.
+		if serveErr := artifactStore.Serve(c, task, ref); serveErr == nil || c.Writer.Written() {
+			return
+		}
 	}
 
 	adaptor, err := initTaskArtifactAdaptor(task)

@@ -125,22 +125,32 @@ function decodeVideoRequest(ctx) {
     throw new Error("field prompt is required when no reference image is provided");
   }
 
-  let rawSeconds = req.seconds !== undefined ? req.seconds : req.duration;
-  if (rawSeconds !== undefined && rawSeconds !== null && rawSeconds !== "") {
-    const sec = Number(rawSeconds);
+  // Both duration aliases travel to the vendor, so both are validated and only
+  // the normalized value is forwarded: a null alias must not smuggle an
+  // out-of-range duration past the billing bound.
+  let rawSeconds;
+  for (const alias of ["seconds", "duration"]) {
+    const supplied = req[alias];
+    if (supplied === undefined || supplied === null || supplied === "") continue;
+    const sec = Number(supplied);
     if (!Number.isInteger(sec) || sec <= 0 || sec > MAX_DURATION_SECONDS) {
       throw new Error("seconds must be a positive integer between 1 and " + MAX_DURATION_SECONDS);
+    }
+    if (rawSeconds !== undefined && rawSeconds !== sec) {
+      throw new Error("seconds and duration must agree when both are provided");
     }
     rawSeconds = sec;
   }
 
   const requestBody = Object.assign({}, req, { model: model });
   delete requestBody["async"];
+  delete requestBody.seconds;
+  delete requestBody.duration;
 
   if (trimmed(prompt)) {
     requestBody.prompt = trimmed(prompt);
   }
-  if (rawSeconds !== undefined && rawSeconds !== null && rawSeconds !== "") {
+  if (rawSeconds !== undefined) {
     requestBody.seconds = rawSeconds;
     requestBody.duration = rawSeconds;
   }

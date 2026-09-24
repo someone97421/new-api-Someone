@@ -3,6 +3,7 @@ package middleware
 import (
 	"bytes"
 	"mime"
+	"net"
 	"net/http"
 	"strings"
 
@@ -61,6 +62,19 @@ func AsyncMediaEnqueue() gin.HandlerFunc {
 		modelName := strings.TrimSpace(payload.Model)
 		if modelName == "" {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, "field model is required")
+			return
+		}
+
+		// The background worker replays the accepted request from this node, so a
+		// token whose IP restrictions exclude loopback cannot use the queue. It is
+		// rejected here instead of failing after a 202 was already returned.
+		token, tokenErr := model.GetTokenById(common.GetContextKeyInt(c, constant.ContextKeyTokenId))
+		if tokenErr != nil || token == nil {
+			abortWithOpenAiMessage(c, http.StatusUnauthorized, "the accepting token is not available")
+			return
+		}
+		if allowIps := token.GetIpLimits(); len(allowIps) > 0 && !common.IsIpInCIDRList(net.ParseIP("127.0.0.1"), allowIps) {
+			abortWithOpenAiMessage(c, http.StatusForbidden, "asynchronous media jobs require a token that allows loopback requests")
 			return
 		}
 

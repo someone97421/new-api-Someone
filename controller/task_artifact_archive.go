@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	relaychannel "github.com/QuantumNous/new-api/relay/channel"
@@ -48,6 +50,10 @@ func (taskArtifactArchiveHandler) Run(ctx context.Context, task *model.SystemTas
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 
+// taskArtifactArchiveBatchSize bounds one archive pass. Tasks already archived
+// are excluded by the candidate query, so finished work never blocks newer work.
+const taskArtifactArchiveBatchSize = 5
+
 type taskArtifactArchiveSummary struct {
 	Archived int `json:"archived"`
 	Skipped  int `json:"skipped"`
@@ -64,21 +70,17 @@ func runTaskArtifactArchivePass(ctx context.Context, store service.TaskArtifactS
 	}
 
 	cutoff := time.Now().Add(-time.Duration(retentionHours) * time.Hour).Unix()
-	tasks := model.ListTerminalTasksForArtifactArchive(cutoff, 5)
-
-	for _, t := range tasks {
-		select {
-		case <-ctx.Done():
-			break
-		default:
+	for _, task := range model.ListTerminalTasksForArtifactArchive(cutoff, taskArtifactArchiveBatchSize) {
+		if ctx.Err() != nil {
+			return summary
 		}
-		archiveTaskArtifacts(ctx, store, t, summary)
+		archiveTaskArtifacts(ctx, store, task, summary)
 	}
 
 	if cleaner, ok := store.(service.ArtifactCleaner); ok {
 		cleaned, err := cleaner.CleanExpired(ctx)
 		if err != nil {
-			logger.LogWarn(ctx, fmt.Sprintf("task artifact cleanup error: %v", err))
+			logger.LogWarn(ctx, fmt.Sprintf("task artifact cleanup error: %s", redactArtifactLogError(err)))
 		}
 		summary.Cleaned = cleaned
 	}
@@ -86,12 +88,34 @@ func runTaskArtifactArchivePass(ctx context.Context, store service.TaskArtifactS
 	return summary
 }
 
+// artifactLogURLPattern matches absolute URLs so archive logs and recorded
+// failures never carry provider URLs that may embed credentials or signatures.
+var artifactLogURLPattern = regexp.MustCompile(`https?://[^\s"'<>]+`)
+
+func redactArtifactLogError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return artifactLogURLPattern.ReplaceAllString(err.Error(), "[redacted-url]")
+}
+
+// recordTaskArtifactArchiveState stores the archive outcome on the task. It
+// never changes the task status or its billing: archiving is a separate delivery
+// step that can fail and retry on later passes.
+func recordTaskArtifactArchiveState(ctx context.Context, task *model.Task, archivedAt int64, message string) {
+	if err := model.MarkTaskArtifactsArchived(task, archivedAt, message); err != nil {
+		logger.LogWarn(ctx, fmt.Sprintf("failed to record artifact archive state for task %s: %s", task.TaskID, redactArtifactLogError(err)))
+	}
+}
+
 func archiveTaskArtifacts(ctx context.Context, store service.TaskArtifactStore, task *model.Task, summary *taskArtifactArchiveSummary) {
 	var artifacts []relaychannel.TaskArtifact
 	if taskHasPluginExecution(task) {
 		projected, err := projectTaskArtifacts(task)
 		if err != nil {
-			logger.LogWarn(ctx, fmt.Sprintf("failed to project artifacts for task %s: %v", task.TaskID, err))
+			logger.LogWarn(ctx, fmt.Sprintf("failed to project artifacts for task %s: %s", task.TaskID, redactArtifactLogError(err)))
+			recordTaskArtifactArchiveState(ctx, task, 0, redactArtifactLogError(err))
+			summary.Failed++
 			return
 		}
 		artifacts = projected
@@ -102,14 +126,17 @@ func archiveTaskArtifacts(ctx context.Context, store service.TaskArtifactStore, 
 	}
 
 	if len(artifacts) == 0 {
+		// There is nothing to archive; recording it keeps the task from occupying
+		// every later batch.
+		recordTaskArtifactArchiveState(ctx, task, common.GetTimestamp(), "")
+		summary.Skipped++
 		return
 	}
 
+	var firstErr error
 	for _, artifact := range artifacts {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return
-		default:
 		}
 
 		ref, err := store.Resolve(task, artifact.Key)
@@ -120,18 +147,32 @@ func archiveTaskArtifacts(ctx context.Context, store service.TaskArtifactStore, 
 
 		descriptor, err := resolveArtifactContentDescriptor(task, artifact.Key)
 		if err != nil || descriptor == nil {
-			logger.LogWarn(ctx, fmt.Sprintf("failed to resolve content request for task %s artifact %s: %v", task.TaskID, artifact.Key, err))
+			logger.LogWarn(ctx, fmt.Sprintf("failed to resolve content request for task %s artifact %s: %s", task.TaskID, artifact.Key, redactArtifactLogError(err)))
+			if firstErr == nil {
+				firstErr = err
+			}
 			summary.Failed++
 			continue
 		}
 
 		if err := fetchAndPersistArtifact(ctx, store, task, artifact, descriptor); err != nil {
-			logger.LogWarn(ctx, fmt.Sprintf("failed to archive task %s artifact %s: %v", task.TaskID, artifact.Key, err))
+			logger.LogWarn(ctx, fmt.Sprintf("failed to archive task %s artifact %s: %s", task.TaskID, artifact.Key, redactArtifactLogError(err)))
+			if firstErr == nil {
+				firstErr = err
+			}
 			summary.Failed++
 			continue
 		}
 		summary.Archived++
 	}
+
+	if firstErr == nil {
+		recordTaskArtifactArchiveState(ctx, task, common.GetTimestamp(), "")
+		return
+	}
+	// A failed attempt stays eligible for the next pass; the recorded reason is
+	// redacted before it is persisted.
+	recordTaskArtifactArchiveState(ctx, task, 0, redactArtifactLogError(firstErr))
 }
 
 func resolveArtifactContentDescriptor(task *model.Task, artifactKey string) (*relaychannel.TaskContentRequest, error) {

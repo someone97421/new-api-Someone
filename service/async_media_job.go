@@ -173,7 +173,7 @@ func RunAsyncMediaJobsOnce(ctx context.Context) AsyncMediaSummary {
 	now := common.GetTimestamp()
 	staleBefore := now - int64(constant.AsyncMediaStaleMinutes)*60
 	if constant.AsyncMediaStaleMinutes > 0 {
-		summary.Recovered = int(model.RecoverStaleAsyncMediaJobs(staleBefore, now))
+		summary.Recovered = int(model.RecoverStaleAsyncMediaJobs(staleBefore, now, model.AsyncMediaJobExpiry(now, constant.AsyncMediaRetentionHours)))
 	}
 	if !AsyncMediaStorageReady() {
 		return summary
@@ -261,8 +261,10 @@ func executeAsyncMediaJob(ctx context.Context, job *model.AsyncMediaJob) error {
 		return finishAsyncMediaJob(job, model.AsyncMediaJobStatusFailed, model.AsyncMediaBillingReconciliationPending, response.StatusCode, "", nil, "", readErr.Error(), now)
 	}
 	if int64(len(payload)) > asyncMediaMaxResponseBytes {
-		payload = payload[:asyncMediaMaxResponseBytes]
-		logger.LogWarn(ctx, fmt.Sprintf("async media job %s response truncated at %d bytes", job.JobID, asyncMediaMaxResponseBytes))
+		// The upstream work already happened and was billed, so a result the host
+		// refuses to store is a failure with an unknown charge, never a silent
+		// success carrying a truncated payload.
+		return finishAsyncMediaJob(job, model.AsyncMediaJobStatusFailed, model.AsyncMediaBillingReconciliationPending, response.StatusCode, "", nil, "", fmt.Sprintf("replayed response exceeds the stored result limit of %d bytes", asyncMediaMaxResponseBytes), now)
 	}
 
 	contentType := response.Header.Get("Content-Type")
