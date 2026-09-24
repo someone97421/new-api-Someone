@@ -7,20 +7,30 @@ export const meta = {
     en: "OpenAI Sora video generation (text-to-video, image-to-video, and remix)",
     zh: "OpenAI Sora 视频生成（文生视频、图生视频、remix）",
   },
-  version: "1.0.1",
+  version: "1.1.0",
   channelTypes: [55, 1], // OpenAI-type channels natively serve sora with the same wire format
   author: { name: "QuantumNous" },
   models: ["sora-2", "sora-2-pro"],
   fetchMode: "per_task",
+  // A New API gateway serves /v1/videos as a host protocol, so no URL changes.
+  upstreams: ["vendor", "new_api"],
   usageSchema: {
+    // Requested video duration in seconds.
     seconds: {
       type: "number",
       unit: "second",
-      description: { en: "Requested video duration in seconds.", zh: "请求的视频时长，单位为秒。" },
+      description: { en: "Video generation unit price", zh: "视频生成单价" },
     },
+    // Requested output video dimensions.
     size: {
       enum: ["720x1280", "1280x720", "1792x1024", "1024x1792"],
-      description: { en: "Requested output video dimensions.", zh: "请求的输出视频尺寸。" },
+      enumLabels: {
+        "720x1280": { en: "720x1280", zh: "720x1280" },
+        "1280x720": { en: "1280x720", zh: "1280x720" },
+        "1792x1024": { en: "1792x1024", zh: "1792x1024" },
+        "1024x1792": { en: "1024x1792", zh: "1024x1792" },
+      },
+      description: { en: "Output video dimensions", zh: "输出视频尺寸" },
     },
   },
   protocols: [{ name: "openai_responses", supports: ["stream", "sync", "background"] }, "openai_video"],
@@ -82,13 +92,6 @@ function requestValues(req, model) {
   return values;
 }
 
-function taskPath(ctx, name, fallback, idKey) {
-  const configured = ctx.videoTaskEndpoints && ctx.videoTaskEndpoints[name];
-  const path = trimmed(configured) || fallback;
-  const taskId = idKey === "{task_id}" ? ctx.taskId : ctx.upstreamTaskId || ctx.originTaskId;
-  return ctx.baseUrl + path.replace(idKey, encodeURIComponent(taskId || ""));
-}
-
 export function buildSubmitRequest(ctx) {
   const req = ctx.requestBody || {};
   if (!String(req.prompt || "").trim()) throw new Error("field prompt is required");
@@ -96,7 +99,7 @@ export function buildSubmitRequest(ctx) {
   const headers = { Authorization: "Bearer " + ctx.apiKey };
   if (action === "remix") {
     headers["Content-Type"] = "application/json";
-    return { url: taskPath(ctx, "remixPath", "/v1/videos/{video_id}/remix", "{video_id}"), method: "POST", headers, body: requestValues(req, ctx.upstreamModel), action };
+    return { url: ctx.baseUrl + "/v1/videos/" + ctx.originTaskId + "/remix", method: "POST", headers, body: requestValues(req, ctx.upstreamModel), action };
   }
   if ((ctx.files || []).length) {
     const parts = [];
@@ -108,10 +111,10 @@ export function buildSubmitRequest(ctx) {
       parts.push({ name: "metadata", value: JSON.stringify(values.metadata) });
     }
     for (const file of ctx.files) parts.push({ name: file.field, fileRef: file.ref, filename: file.filename });
-    return { url: ctx.baseUrl + (trimmed(ctx.videoTaskEndpoints && ctx.videoTaskEndpoints.submitPath) || "/v1/videos"), method: "POST", headers, bodyType: "multipart", parts };
+    return { url: ctx.baseUrl + "/v1/videos", method: "POST", headers, bodyType: "multipart", parts };
   }
   headers["Content-Type"] = "application/json";
-  return { url: ctx.baseUrl + (trimmed(ctx.videoTaskEndpoints && ctx.videoTaskEndpoints.submitPath) || "/v1/videos"), method: "POST", headers, body: requestValues(req, ctx.upstreamModel) };
+  return { url: ctx.baseUrl + "/v1/videos", method: "POST", headers, body: requestValues(req, ctx.upstreamModel) };
 }
 
 export function parseSubmitResponse(ctx, resp) {
@@ -139,7 +142,7 @@ export function extractUsageOnComplete(task, taskResult, body) {
 }
 
 export function buildQueryRequest(ctx) {
-  return { url: taskPath(ctx, "queryPath", "/v1/videos/{task_id}", "{task_id}"), method: "GET", headers: { Authorization: "Bearer " + ctx.apiKey } };
+  return { url: ctx.baseUrl + "/v1/videos/" + ctx.taskId, method: "GET", headers: { Authorization: "Bearer " + ctx.apiKey } };
 }
 
 export function parseTaskResult(ctx, body) {
@@ -167,7 +170,7 @@ export function listArtifacts(task) {
 export function buildContentRequest(ctx) {
   if (ctx.artifactKey !== "video") throw new Error("artifact_not_found");
   return {
-    url: taskPath({ ...ctx, taskId: ctx.upstreamTaskId }, "contentPath", "/v1/videos/{task_id}/content", "{task_id}"),
+    url: ctx.baseUrl + "/v1/videos/" + encodeURIComponent(ctx.upstreamTaskId) + "/content",
     method: ctx.clientRequest.method,
     headers: { Authorization: "Bearer " + ctx.apiKey },
   };
@@ -308,6 +311,7 @@ protocols.openai_video = {
     };
   },
   render: function (ctx, task) {
+    if (task.data && typeof task.data === "object" && !Array.isArray(task.data)) return task.data;
     return legacyRenderers.openai_video(task);
   },
 };
