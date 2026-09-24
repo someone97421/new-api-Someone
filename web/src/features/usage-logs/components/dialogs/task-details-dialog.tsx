@@ -25,28 +25,15 @@ import { useTranslation } from 'react-i18next'
 import { Dialog } from '@/components/dialog'
 import { StatusBadge } from '@/components/status-badge'
 import { Label } from '@/components/ui/label'
-import { DynamicPricingBreakdown } from '@/features/pricing/components/dynamic-pricing-breakdown'
 import { formatLogQuota, formatTimestampToDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 import { getTaskData } from '../../api'
-import { decodeBillingExprB64 } from '../../lib/format'
 import { taskActionMapper, taskStatusMapper } from '../../lib/mappers'
 import { resolveTaskDetailAccess } from '../../lib/task-details'
 import type { TaskLog } from '../../types'
 import { PluginAuthorLink } from '../plugin-author-link'
 
-function parseLogOther(value: string | undefined): Record<string, unknown> {
-  if (!value) return {}
-  try {
-    const parsed: unknown = JSON.parse(value)
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {}
-  } catch {
-    return {}
-  }
-}
 
 function DetailRow(props: {
   label: React.ReactNode
@@ -111,9 +98,6 @@ export function TaskDetailsDialog(props: TaskDetailsDialogProps) {
   const plugin = access.plugin
   const runtime = access.runtime
   const properties = props.log.properties
-  const other = parseLogOther(props.log.other)
-  const usageFacts = other.usage_facts
-  const billingExpr = other.expr_b64
 
   return (
     <Dialog
@@ -269,24 +253,6 @@ export function TaskDetailsDialog(props: TaskDetailsDialogProps) {
           </DetailSection>
         ) : null}
 
-        {typeof billingExpr === 'string' && billingExpr ? (
-          <DetailSection label={t('Dynamic Pricing')}>
-            <DynamicPricingBreakdown
-              compact
-              billingExpr={decodeBillingExprB64(billingExpr)}
-              matchedTierLabel={
-                typeof other.matched_tier === 'string'
-                  ? other.matched_tier
-                  : undefined
-              }
-              usageFacts={
-                usageFacts && typeof usageFacts === 'object' && !Array.isArray(usageFacts)
-                  ? (usageFacts as Record<string, string | number>)
-                  : undefined
-              }
-            />
-          </DetailSection>
-        ) : null}
 
         {props.isRoot && props.log.root_info ? (
           <DetailSection
