@@ -245,8 +245,13 @@
 
 ## 执行记录
 
-- 当前状态：执行任务书已准备，代码实施尚未开始。
-- 下一步：执行阶段 0，核对实际基线和同步图片结果在官方插件契约中的承载方式，随后连续实施后续阶段。
+- 当前状态：阶段 0/1 完成，阶段 2 进行中。
+- 基线：当前分支 `main-upstream-rebase-20260906`，合并 `upstream/main`（实际 SHA `d04c118c8`）后的提交 `4e525d5a2`。官方 `openai_image` / `openai_video` / `openai_responses` 宿主协议、多渠道任务插件绑定、任务用量表达式均已就位。
+- 旧定制处置（阶段 1）：渠道级 `video_task_endpoints` 定制（DTO、校验、插件上下文注入、Sora 插件路径覆盖）已按官方实现替换，端点差异改由供应商插件承接；保留三处最小扩展——`TaskEnabled` 管理开关入口、管理员按需查看任务数据（`GET /api/task/:task_id/data` + 任务详情“查看任务数据”）、任务详情动态计费展示（复用官方 `DynamicPricingBreakdown`）。
+- 已完成交付物：`plugins/tasks/gemini-image/plugin.js`（Gemini 原生生图经官方 `openai_image` 协议对外提供 OpenAI Images；别名、参考图、尺寸/比例/种子映射、安全拦截与文本回复判定、`image_count`/`image_size` 计费事实），配套确定性样例测试 `plugins/gemini_image_plugin_test.go`，`plugins/builtin_plugins_test.go` 增加 `extraPluginKeys` 分组。
+- 已执行检查：`go build`（除 `web/dist` 内嵌，全部包通过）；`go test ./plugins/ -run 'GeminiImage|BuiltIn'`（通过）。
+- 关键决策：Gemini 生图沿用旧实现验证过的 `:generateContent` + `generationConfig.imageConfig` 为默认形态，`image_config_mode: response_format` 保留旧兼容分支；别名 `nano-banana*` 在插件内映射，渠道模型映射优先。
+- 下一步：阶段 2 的非标准 OpenAI 兼容图片/视频任务插件，阶段 3 显式异步媒体作业，阶段 4 本地媒体归档。
 
 ## 参考证据
 

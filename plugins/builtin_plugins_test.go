@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"io/fs"
+	"sort"
 	"strings"
 	"testing"
 
@@ -12,6 +13,16 @@ import (
 )
 
 var expectedKeys = []string{"alibaba", "doubao", "google", "hailuo", "jimeng", "kling", "sora", "sunoapi", "vertex-ai", "vidu"}
+
+// extraPluginKeys covers built-in plugins that claim host protocols without
+// declaring native vendor routes or a legacy channel type.
+var extraPluginKeys = []string{"gemini-image"}
+
+func expectedPluginKeys() []string {
+	keys := append(append([]string(nil), expectedKeys...), extraPluginKeys...)
+	sort.Strings(keys)
+	return keys
+}
 
 func TestBuiltInVendorPluginsDeclareNativeRoutesAndLegacyChannelTypes(t *testing.T) {
 	generation := jsplugin.DefaultRegistry.Generation()
@@ -86,7 +97,7 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 			actualKeys = append(actualKeys, entry.Name())
 		}
 	}
-	assert.Equal(t, expectedKeys, actualKeys)
+	assert.Equal(t, expectedPluginKeys(), actualKeys)
 
 	for _, key := range expectedKeys {
 		t.Run(key, func(t *testing.T) {
