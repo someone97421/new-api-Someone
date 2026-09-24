@@ -245,13 +245,18 @@
 
 ## 执行记录
 
-- 当前状态：阶段 0/1 完成，阶段 2 进行中。
+- 当前状态：全部阶段实施完成，交付物、配置与文档就位；剩余为需要真实供应商/数据库实例的验收项。
 - 基线：当前分支 `main-upstream-rebase-20260906`，合并 `upstream/main`（实际 SHA `d04c118c8`）后的提交 `4e525d5a2`。官方 `openai_image` / `openai_video` / `openai_responses` 宿主协议、多渠道任务插件绑定、任务用量表达式均已就位。
-- 旧定制处置（阶段 1）：渠道级 `video_task_endpoints` 定制（DTO、校验、插件上下文注入、Sora 插件路径覆盖）已按官方实现替换，端点差异改由供应商插件承接；保留三处最小扩展——`TaskEnabled` 管理开关入口、管理员按需查看任务数据（`GET /api/task/:task_id/data` + 任务详情“查看任务数据”）、任务详情动态计费展示（复用官方 `DynamicPricingBreakdown`）。
+- 旧定制处置（阶段 1）：渠道级 `video_task_endpoints` 定制（DTO、校验、插件上下文注入、Sora 插件路径覆盖）已按官方实现替换，端点差异改由供应商插件承接；保留三处最小扩展——`TaskEnabled` 管理开关入口、管理员按需查看任务数据（`GET /api/task/:task_id/data` + 任务详情“查看任务数据”）；任务详情不维护第二套计费展示，计费明细沿用官方用法日志计费组件。
+- 关键决策：Gemini 生图沿用旧实现验证过的 `:generateContent` + `generationConfig.imageConfig` 默认形态，`image_config_mode: response_format` 保留兼容分支；别名在插件内映射且渠道模型映射优先；异步作业用受理者令牌重放原请求，计费与结算保持官方唯一链路。
 - 已完成交付物：`plugins/tasks/gemini-image/plugin.js`（Gemini 原生生图经官方 `openai_image` 协议对外提供 OpenAI Images；别名、参考图、尺寸/比例/种子映射、安全拦截与文本回复判定、`image_count`/`image_size` 计费事实），配套确定性样例测试 `plugins/gemini_image_plugin_test.go`，`plugins/builtin_plugins_test.go` 增加 `extraPluginKeys` 分组。
-- 已执行检查：`go build`（除 `web/dist` 内嵌，全部包通过）；`go test ./plugins/ -run 'GeminiImage|BuiltIn'`（通过）。
-- 关键决策：Gemini 生图沿用旧实现验证过的 `:generateContent` + `generationConfig.imageConfig` 为默认形态，`image_config_mode: response_format` 保留旧兼容分支；别名 `nano-banana*` 在插件内映射，渠道模型映射优先。
-- 下一步：阶段 2 的非标准 OpenAI 兼容图片/视频任务插件，阶段 3 显式异步媒体作业，阶段 4 本地媒体归档。
+- 阶段 2 交付：`plugins/tasks/gemini-image`（Gemini 原生生图 → OpenAI Images）、`plugins/tasks/openai-task-image`、`plugins/tasks/openai-task-video`（非标准 OpenAI 兼容图片/视频任务），配套 `plugins/gemini_image_plugin_test.go`、`plugins/openai_task_plugins_test.go`，内建插件清单分组更新。
+- 阶段 3 交付：显式异步媒体作业（`?async=true` 受理 202、`GET /v1/async/tasks/:job_id` 查询、`GET /api/task/async` 管理端列表、系统任务 `async_media_job` 后台重放）；官方任务提交响应新增 `X-New-Api-Task-Id` 头用于关联任务行；中断作业不自动重放，记为 `reconciliation_pending`。
+- 阶段 4 交付：启用官方 `TaskArtifactStore` 的 local 后端（`setting/system_setting/task_artifact_store.go`、`service/task_artifact_local_store.go`），系统任务 `task_artifact_archive` 归档终态产物并清理到期文件；任务私有数据记录 `artifact_archived_at` / `artifact_archive_error`，归档不改变任务状态与计费。
+- 阶段 5 交付：使用说明 `docs/media-plugins-and-async-jobs.md`（安装、插件与模型映射、计费表达式、异步调用、存储与排障）；任务详情不再维护取不到数据的第二套计费展示，改用官方用法日志计费组件。
+- 已执行检查：`go build`（除根包 `web/dist` 内嵌缺失，全部包通过）；`go vet`（service/model/middleware/controller/router/plugins）；`go test ./plugins/`、`./service/ -run 'AsyncMediaJob|TaskArtifact'`、`./model/`、`./router/`；前端 `tsgo -b`（改动文件 0 错误，另 8 处为上游既有/依赖版本差异）、i18n 同步脚本无改动。
+- 已知既有问题（与本次改动无关，已在基线 4e525d5a2 复现）：Windows 下 `TestUpdateOptionAliasBillingExprUsesPluginSchema`、`TestSharedModelPluginPricingDatabaseMatrix/sqlite` 因 SQLite 句柄未释放导致 TempDir 清理失败；`./service/` 全量并行运行时的渠道亲和缓存用例顺序依赖失败。
+- 未验证（需外部条件）：真实 Gemini/自定义站点联调（站点 URL、模型名、密钥）、真实上游媒体拉取与跨节点共享目录、MySQL/PostgreSQL 上的新增表迁移（缺少实例与 `TEST_MYSQL_DSN`/`TEST_POSTGRES_DSN`）。
 
 ## 参考证据
 

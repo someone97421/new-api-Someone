@@ -135,6 +135,7 @@ u("resolution") == "1080p" ? tier("1080p", u("seconds") * 0.05) : tier("720p", u
 * 把 `TASK_ARTIFACT_STORE_MODE` 设为 `local` 即启用。归档由系统任务 `task_artifact_archive` 每 60 秒执行：只处理近期完成（保留期限内）且状态为 `SUCCESS` 的任务，每轮最多 5 个任务、产物串行拉取。
 * 读取顺序：产物内容接口先查本地副本（`Resolve`），命中即由本地文件服务（支持 Range/HEAD/条件请求，并带与上游代理一致的安全响应头）；未命中或已过期则回落到上游代理，行为和未启用时一致。
 * 过期与失败：保留期限从归档时刻起算，过期后本地副本被清理，接口回落上游；上游链接已失效时客户端会收到上游/代理错误，这是过期后的确定行为。归档失败只记警告并在下一轮重试，**不会**把任务标记为失败，也不会触发重新生成或重复计费。
+* 归档进度与失败可见性：任务产物全部归档（或该任务没有产物）后，会在任务私有数据记录 `artifact_archived_at` 并退出归档候选，避免固定批次被历史任务占满；失败时记录 `artifact_archive_error` 供排查，同时保持任务可重试，日志中的供应商 URL 已脱敏。
 * 多节点：`local` 模式要求各节点共享同一目录（例如 NFS）；否则异机读不到副本时会自动回落上游代理。单节点部署无此约束。
 * 显式异步作业的响应体保留在 `ASYNC_MEDIA_DIR`，与产物归档相互独立；作业响应过期后 `GET /v1/async/tasks/:id` 仍返回状态与 `task_id`，只是不再返回 `data`。
 
@@ -147,9 +148,12 @@ u("resolution") == "1080p" ? tier("1080p", u("seconds") * 0.05) : tier("720p", u
 | 作业长期 `queued` | 主节点系统任务是否运行（`async_media_job` 每 5 秒一轮）；`ASYNC_MEDIA_DIR` 是否可写。 |
 | 作业 `failed` + `reconciliation_pending` | worker 在请求发出后中断；查消费日志与任务日志确认是否已计费，必要时人工退款。 |
 | 作业 `failed` + `not_charged` | 重放请求未通过官方链路（额度不足、令牌被禁用、渠道无可用上游等）；`error` 字段带原始错误体。 |
+| 作业 `failed` + `reconciliation_pending` 且 error 提示结果超过存储上限 | 上游已生成但结果超过 32 MiB 未被保留；按消费日志确认计费并人工处理。 |
 | 图片插件报 `no images generated: SAFETY` | 上游安全拦截或模型只返回文本；该情况按 0 计费。 |
 | `GET /v1/tasks/:taskId/artifacts/:key/content` 变慢或 502 | 本地产物未命中而回落到上游；检查归档任务是否运行、上游链接是否有效。 |
 | 归档目录增长异常 | 检查 `TASK_ARTIFACT_STORE_RETENTION_HOURS` 与系统任务 `task_artifact_archive` 的执行记录。 |
+
+`billing_status` 是投递侧摘要，权威账单仍以消费日志为准：2xx 记为 `settled`；4xx 记为 `not_charged`（官方链路在返回错误前已退款）；5xx、已发出但未收到响应，以及结果超过 32 MiB 存储上限的情况记为 `reconciliation_pending`，需人工对账。
 
 排障入口：`GET /api/task/:task_id/data`（管理员按需读取任务存储快照）、任务插件页面、系统任务页面的执行历史，以及 `DEBUG=true` 时按 `task_plugin` 过滤的结构化日志。插件与作业日志不会输出凭据、请求头或二进制正文。
 
