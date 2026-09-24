@@ -652,3 +652,140 @@ func TestSelfTaskMediaURLGuard(t *testing.T) {
 	assert.True(t, isTaskMediaFallbackLoop(remoteURL.String(), "task-1"))
 	assert.False(t, isTaskMediaFallbackLoop(remoteURL.String(), "task-2"))
 }
+
+func TestTaskArtifactLocalDelivery(t *testing.T) {
+	task := setupGenericTaskTest(t)
+	store := service.NewLocalArtifactStore(t.TempDir(), 24)
+	previousStore := service.GetTaskArtifactStore()
+	service.SetTaskArtifactStore(store)
+	t.Cleanup(func() { service.SetTaskArtifactStore(previousStore) })
+	for _, tc := range []struct {
+		name      string
+		key       string
+		discarded bool
+	}{
+		{name: "legacy video", key: "video"},
+		{name: "discarded image snapshot", key: "image_0", discarded: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			task.Action = constant.TaskActionTextToVideo
+			task.PrivateData.ResultURL = "https://unavailable.invalid/video.mp4"
+			task.PrivateData.ResultDiscarded = tc.discarded
+			require.NoError(t, model.DB.Save(task).Error)
+			_, err := store.Persist(context.Background(), task, relaychannel.TaskArtifact{Key: tc.key, MimeType: "video/mp4"}, strings.NewReader("local bytes"))
+			require.NoError(t, err)
+			for _, request := range []struct {
+				user   int
+				key    string
+				status int
+			}{
+				{task.UserId, tc.key, http.StatusPartialContent},
+				{task.UserId + 1, tc.key, http.StatusNotFound},
+				{task.UserId, "missing", http.StatusNotFound},
+			} {
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
+				c.Set("id", request.user)
+				c.Params = gin.Params{{Key: "key", Value: task.TaskID}, {Key: "artifact_key", Value: request.key}}
+				c.Request = httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.TaskID+"/artifacts/"+request.key+"/content", nil)
+				c.Request.Header.Set("Range", "bytes=0-4")
+				TaskArtifactContent(c)
+				assert.Equal(t, request.status, recorder.Code)
+				if request.status == http.StatusPartialContent {
+					assert.Equal(t, "local", recorder.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestTaskArtifactArchiveRedirectAndDeadline(t *testing.T) {
+	task := setupGenericTaskTest(t)
+	allowPrivateTaskMediaTest(t)
+	previousCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = previousCache })
+	store := service.NewLocalArtifactStore(t.TempDir(), 24)
+	artifact := relaychannel.TaskArtifact{Key: "video", Type: "video"}
+	err := fetchAndPersistArtifact(context.Background(), store, task, artifact, nil)
+	require.ErrorContains(t, err, "descriptor is nil")
+
+	var receivedHeaders http.Header
+	var receivedBody string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, "/content", http.StatusTemporaryRedirect)
+			return
+		}
+		receivedHeaders = r.Header.Clone()
+		body, _ := io.ReadAll(r.Body)
+		receivedBody = string(body)
+		_, _ = io.WriteString(w, "stored bytes")
+	}))
+	defer target.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer origin.Close()
+	descriptor := &relaychannel.TaskContentRequest{
+		URL: origin.URL, Method: http.MethodPost, Body: []byte("secret body"),
+		Headers: map[string]string{"x-goog-api-key": "private-key", "Authorization": "Bearer private-key"},
+	}
+	err = fetchAndPersistArtifact(context.Background(), store, task, artifact, descriptor)
+	require.ErrorContains(t, err, "credentialed cross-origin redirect")
+	assert.Nil(t, receivedHeaders)
+	descriptor.Credentialless = true
+	require.NoError(t, fetchAndPersistArtifact(context.Background(), store, task, artifact, descriptor))
+	assert.Empty(t, receivedHeaders.Get("x-goog-api-key"))
+	assert.Empty(t, receivedHeaders.Get("Authorization"))
+	assert.Empty(t, receivedBody)
+
+	stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer stalled.Close()
+	previousTimeout := taskArtifactArchiveTimeout
+	taskArtifactArchiveTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { taskArtifactArchiveTimeout = previousTimeout })
+	err = fetchAndPersistArtifact(context.Background(), store, task, relaychannel.TaskArtifact{Key: "stalled"}, &relaychannel.TaskContentRequest{URL: stalled.URL})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	ref, err := store.Resolve(task, "stalled")
+	require.NoError(t, err)
+	assert.Nil(t, ref)
+}
+
+func TestTaskArtifactArchiveCandidatesAndRetry(t *testing.T) {
+	first := setupGenericTaskTest(t)
+	first.FinishTime = time.Now().Unix()
+	// A plugin-owned nested key must never masquerade as the host archive flag.
+	first.PrivateData.PluginState = []byte(`{"artifact_archived_at":123}`)
+	require.NoError(t, model.DB.Save(first).Error)
+	second := &model.Task{TaskID: "task_second", Status: model.TaskStatusSuccess, FinishTime: first.FinishTime + 1}
+	require.NoError(t, model.DB.Create(second).Error)
+	candidates := model.ListTerminalTasksForArtifactArchive(0, 1)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, first.ID, candidates[0].ID)
+	require.NoError(t, model.MarkTaskArtifactsArchived(first, 0, "failed download"))
+	candidates = model.ListTerminalTasksForArtifactArchive(0, 1)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, second.ID, candidates[0].ID)
+	require.NoError(t, model.MarkTaskArtifactsArchived(second, time.Now().Unix(), ""))
+	assert.Empty(t, model.ListTerminalTasksForArtifactArchive(0, 5))
+
+	var failed model.Task
+	require.NoError(t, model.DB.First(&failed, first.ID).Error)
+	assert.Zero(t, failed.PrivateData.ArtifactArchivedAt)
+	assert.Equal(t, "failed download", failed.PrivateData.ArtifactArchiveError)
+	failed.PrivateData.ArtifactArchiveAttemptedAt = time.Now().Add(-6 * time.Minute).Unix()
+	require.NoError(t, model.DB.Save(&failed).Error)
+	candidates = model.ListTerminalTasksForArtifactArchive(0, 5)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, first.ID, candidates[0].ID)
+	// A row whose private data contains only archive state must keep that state.
+	var archived model.Task
+	require.NoError(t, model.DB.First(&archived, second.ID).Error)
+	assert.Positive(t, archived.PrivateData.ArtifactArchivedAt)
+	assert.Positive(t, archived.PrivateData.ArtifactArchiveAttemptedAt)
+}

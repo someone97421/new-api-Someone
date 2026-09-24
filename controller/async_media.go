@@ -1,11 +1,14 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
@@ -23,6 +26,9 @@ func GetAsyncMediaJob(c *gin.Context) {
 			"code":    "job_not_found",
 		}})
 		return
+	}
+	if job.Status == model.AsyncMediaJobStatusAwaitingTask {
+		reconcileAsyncMediaTask(c, job)
 	}
 	c.Header("Cache-Control", "private, no-store")
 	c.JSON(http.StatusOK, asyncMediaJobResponse(job))
@@ -86,4 +92,111 @@ func asyncMediaJobResponse(job *model.AsyncMediaJob) gin.H {
 		response["data"] = json.RawMessage(payload)
 	}
 	return response
+}
+
+// reconcileAsyncMediaTask renders the terminal official task without re-submitting
+// the upstream request or changing its billing. A nonterminal task remains pending.
+func reconcileAsyncMediaTask(c *gin.Context, job *model.AsyncMediaJob) {
+	task, exists, err := model.GetByTaskId(job.UserId, job.OriginTaskID)
+	if err != nil || !exists || task == nil {
+		return
+	}
+	if task.Status != model.TaskStatusSuccess && task.Status != model.TaskStatusFailure {
+		return
+	}
+	now := common.GetTimestamp()
+	expires := model.AsyncMediaJobExpiry(now, constant.AsyncMediaRetentionHours)
+	if task.Status == model.TaskStatusFailure {
+		if err := model.CompleteAsyncMediaJob(job, model.AsyncMediaJobStatusFailed, model.AsyncMediaBillingNotCharged, http.StatusBadRequest, job.OriginTaskID, "", "", task.FailReason, now, expires); err != nil {
+			return
+		}
+		service.DeleteAsyncMediaFile(job.RequestFile)
+		_ = model.ClearAsyncMediaJobRequestFile(job.JobID, now)
+		job.Status, job.BillingStatus, job.Error = model.AsyncMediaJobStatusFailed, model.AsyncMediaBillingNotCharged, task.FailReason
+		return
+	}
+	body, err := service.ReadAsyncMediaRequest(job)
+	if err != nil {
+		return
+	}
+	var requestBody map[string]any
+	if err := common.Unmarshal(body, &requestBody); err != nil {
+		return
+	}
+	plugin, _, ok := resolveTaskPluginForProtocolRetrieve(task.Platform)
+	if !ok || plugin == nil {
+		return
+	}
+	view, err := service.BuildTaskPluginView(task)
+	if err != nil {
+		return
+	}
+	viewValue, err := taskPluginProtocolJSONValue(view)
+	if err != nil {
+		return
+	}
+	operation := "generate"
+	if job.RequestPath == "/v1/images/edits" {
+		operation = "edit"
+	}
+	protocolRequest := pluginruntime.ProtocolRequestContext{
+		RouteRequestContext: pluginruntime.RouteRequestContext{Path: job.RequestPath, Method: http.MethodPost, Body: map[string]any{"kind": "json", "value": requestBody}},
+		Protocol:            pluginruntime.ProtocolOpenAIImage, Operation: operation, Model: job.ModelName,
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), pluginruntime.DefaultCallTimeout)
+	defer cancel()
+	value, err := plugin.Engine.CallPathWithAdmissionTimeout(ctx, pluginruntime.DefaultCallTimeout, "protocols", []string{pluginruntime.ProtocolOpenAIImage, "render"}, protocolRequest.JSValue(), viewValue)
+	if err != nil {
+		return
+	}
+	result, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	data, ok := result["data"].([]any)
+	if !ok {
+		return
+	}
+	if format, _ := requestBody["response_format"].(string); format == "b64_json" {
+		for _, entry := range data {
+			item, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			url, _ := item["url"].(string)
+			encoded, _ := item["b64_json"].(string)
+			if url == "" || encoded != "" {
+				continue
+			}
+			_, encoded, err := service.GetImageFromUrl(url)
+			if err == nil {
+				item["b64_json"] = encoded
+			}
+		}
+	}
+	if _, present := result["created"]; !present {
+		result["created"] = task.CreatedAt
+	}
+	payload, err := common.Marshal(result)
+	if err != nil || len(payload) > 32<<20 {
+		message := "rendered task result exceeds the stored response limit or cannot be encoded"
+		if err := model.CompleteAsyncMediaJob(job, model.AsyncMediaJobStatusFailed, model.AsyncMediaBillingReconciliationPending, http.StatusInternalServerError, job.OriginTaskID, "", "", message, now, expires); err != nil {
+			return
+		}
+		service.DeleteAsyncMediaFile(job.RequestFile)
+		_ = model.ClearAsyncMediaJobRequestFile(job.JobID, now)
+		job.Status, job.BillingStatus, job.HTTPStatus, job.Error = model.AsyncMediaJobStatusFailed, model.AsyncMediaBillingReconciliationPending, http.StatusInternalServerError, message
+		return
+	}
+	responseFile, err := service.SaveAsyncMediaResponse(job.JobID, payload)
+	if err != nil {
+		return
+	}
+	if err := model.CompleteAsyncMediaJob(job, model.AsyncMediaJobStatusSucceeded, model.AsyncMediaBillingSettled, http.StatusOK, job.OriginTaskID, responseFile, "application/json", "", now, expires); err != nil {
+		return
+	}
+	service.DeleteAsyncMediaFile(job.RequestFile)
+	_ = model.ClearAsyncMediaJobRequestFile(job.JobID, now)
+	job.Status, job.BillingStatus, job.HTTPStatus, job.ResponseFile = model.AsyncMediaJobStatusSucceeded, model.AsyncMediaBillingSettled, http.StatusOK, responseFile
+	job.Error = ""
 }

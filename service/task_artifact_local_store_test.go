@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,12 +41,12 @@ func TestTaskArtifactLocal_PersistResolveServe(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, ref)
 	assert.Equal(t, "local", ref.Backend)
-	assert.Equal(t, "task_test_001/video", ref.ObjectKey)
+	assert.Equal(t, "task_test_001", filepath.Dir(ref.ObjectKey))
 	assert.Equal(t, "video/mp4", ref.MimeType)
 	assert.Equal(t, int64(len(payload)), ref.Size)
 
 	// Verify sidecar file
-	sidecarPath := filepath.Join(dir, "task_test_001", "video.meta.json")
+	sidecarPath := filepath.Join(dir, filepath.FromSlash(ref.ObjectKey)) + ".meta.json"
 	sidecarData, err := os.ReadFile(sidecarPath)
 	require.NoError(t, err)
 	var meta LocalArtifactMeta
@@ -155,7 +156,7 @@ func TestTaskArtifactLocal_SidecarMissingFallback(t *testing.T) {
 	require.NotNil(t, ref)
 
 	// Remove sidecar
-	sidecarPath := filepath.Join(dir, "task_test_fallback", "info.meta.json")
+	sidecarPath := filepath.Join(dir, filepath.FromSlash(ref.ObjectKey)) + ".meta.json"
 	err = os.Remove(sidecarPath)
 	require.NoError(t, err)
 
@@ -163,7 +164,7 @@ func TestTaskArtifactLocal_SidecarMissingFallback(t *testing.T) {
 	resolved, err := store.Resolve(task, "info")
 	require.NoError(t, err)
 	require.NotNil(t, resolved)
-	assert.Equal(t, "task_test_fallback/info", resolved.ObjectKey)
+	assert.Equal(t, ref.ObjectKey, resolved.ObjectKey)
 	assert.Equal(t, int64(len(payload)), resolved.Size)
 	assert.NotEmpty(t, resolved.MimeType)
 
@@ -306,17 +307,64 @@ func TestTaskArtifactLocal_CleanExpired(t *testing.T) {
 	oldResolved, err := store.Resolve(taskOld, "output")
 	require.NoError(t, err)
 	assert.Nil(t, oldResolved, "taskOld artifact should no longer exist")
-	_, err = os.Stat(filepath.Join(dir, "task_old_terminal", "output"))
+	_, err = os.Stat(filepath.Join(dir, "task_old_terminal", localArtifactFilename("output")))
 	assert.True(t, os.IsNotExist(err), "taskOld file must be deleted")
-	_, err = os.Stat(filepath.Join(dir, "task_old_terminal", "output.meta.json"))
+	_, err = os.Stat(filepath.Join(dir, "task_old_terminal", localArtifactFilename("output")+".meta.json"))
 	assert.True(t, os.IsNotExist(err), "taskOld sidecar must be deleted")
 
 	// Verify taskNew is preserved
 	newResolved, err := store.Resolve(taskNew, "output")
 	require.NoError(t, err)
 	require.NotNil(t, newResolved, "taskNew artifact must be preserved")
-	_, err = os.Stat(filepath.Join(dir, "task_new_terminal", "output"))
+	_, err = os.Stat(filepath.Join(dir, filepath.FromSlash(newResolved.ObjectKey)))
 	assert.NoError(t, err, "taskNew file must still exist")
-	_, err = os.Stat(filepath.Join(dir, "task_new_terminal", "output.meta.json"))
+	_, err = os.Stat(filepath.Join(dir, filepath.FromSlash(newResolved.ObjectKey)) + ".meta.json")
 	assert.NoError(t, err, "taskNew sidecar must still exist")
+}
+
+func TestTaskArtifactLocal_KeysCannotOverwriteMetadata(t *testing.T) {
+	store := NewLocalArtifactStore(t.TempDir(), 1)
+	archivedAt := time.Now()
+	store.SetNowFunc(func() time.Time { return archivedAt })
+	task := &model.Task{TaskID: "task_keys"}
+	keys := []string{"video", "video.meta.json", ".tmp-video", "VIDEO", "artifact-custom.data"}
+	for _, key := range keys {
+		_, err := store.Persist(context.Background(), task, types.TaskArtifact{Key: key}, strings.NewReader("content:"+key))
+		require.NoError(t, err)
+	}
+	for _, key := range keys {
+		ref, err := store.Resolve(task, key)
+		require.NoError(t, err)
+		require.NotNil(t, ref)
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/content", nil)
+		require.NoError(t, store.Serve(c, task, ref))
+		assert.Equal(t, "content:"+key, w.Body.String())
+	}
+	archivedAt = archivedAt.Add(2 * time.Hour)
+	cleaned, err := store.CleanExpired(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, len(keys), cleaned)
+	entries, err := os.ReadDir(store.LocalDir())
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+}
+
+func TestTaskArtifactLocal_LegacyFilesAndSidecars(t *testing.T) {
+	store := NewLocalArtifactStore(t.TempDir(), 24)
+	task := &model.Task{TaskID: "task_legacy"}
+	dir := filepath.Join(store.LocalDir(), task.TaskID)
+	require.NoError(t, os.MkdirAll(dir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "video"), []byte("legacy video"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "video.meta.json"), []byte(`{"mime_type":"video/mp4"}`), 0600))
+	ref, err := store.Resolve(task, "video")
+	require.NoError(t, err)
+	require.NotNil(t, ref)
+	assert.Equal(t, "task_legacy/video", ref.ObjectKey)
+	for _, key := range []string{"video.meta.json", "video.META.JSON", "video.meta.json."} {
+		ref, err = store.Resolve(task, key)
+		require.NoError(t, err)
+		assert.Nil(t, ref)
+	}
 }

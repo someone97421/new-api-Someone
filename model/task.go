@@ -2,10 +2,12 @@ package model
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -142,8 +144,9 @@ type TaskPrivateData struct {
 	// re-reading finished tasks and starving newer ones. ArtifactArchiveError
 	// keeps the last archive failure visible for administration; neither field
 	// changes the task status or its billing.
-	ArtifactArchivedAt   int64  `json:"artifact_archived_at,omitempty"`
-	ArtifactArchiveError string `json:"artifact_archive_error,omitempty"`
+	ArtifactArchivedAt         int64  `json:"artifact_archived_at,omitempty"`
+	ArtifactArchiveError       string `json:"artifact_archive_error,omitempty"`
+	ArtifactArchiveAttemptedAt int64  `json:"artifact_archive_attempted_at,omitempty"`
 }
 
 type TaskExecutionSnapshot struct {
@@ -222,7 +225,7 @@ func (p TaskPrivateData) Value() (driver.Value, error) {
 		p.Execution == nil && p.BillingSource == "" && p.SubscriptionId == 0 &&
 		p.TokenId == 0 && p.NodeName == "" && p.BillingContext == nil &&
 		!p.ResponsesBackground && len(p.PluginState) == 0 && p.PollFailures == 0 &&
-		!p.ResultDiscarded {
+		!p.ResultDiscarded && p.ArtifactArchivedAt == 0 && p.ArtifactArchiveError == "" && p.ArtifactArchiveAttemptedAt == 0 {
 		return nil, nil
 	}
 	// 同 Properties.Value:string 避免 PG simple protocol 的 bytea 编码。
@@ -385,33 +388,45 @@ func GetTimedOutUnfinishedTasks(cutoffUnix int64, limit int) []*Task {
 	return tasks
 }
 
-// taskArtifactArchiveMarker is the private-data key that marks a fully archived
-// task. The archive worker's candidate query matches it as text, which works on
-// every supported database because private_data is a JSON text column.
-const taskArtifactArchiveMarker = "artifact_archived_at"
-
-// ListTerminalTasksForArtifactArchive queries terminal successful tasks for
-// artifact archival. It is database-agnostic using standard GORM queries with
-// existing indexed columns, and it excludes tasks whose artifacts are already
-// archived so a fixed batch size cannot keep re-reading finished tasks.
+// ListTerminalTasksForArtifactArchive selects unarchived results using decoded
+// metadata, avoiding dialect-specific JSON expressions and textual key matches.
+// Oldest attempts run first, so repeated failures cannot starve untouched tasks.
 func ListTerminalTasksForArtifactArchive(cutoffUnix int64, limit int) []*Task {
 	if limit <= 0 {
 		return nil
 	}
 	var tasks []*Task
-	err := DB.Where(
-		"status = ? AND finish_time >= ? AND (private_data IS NULL OR private_data NOT LIKE ?)",
-		TaskStatusSuccess,
-		cutoffUnix,
-		"%"+taskArtifactArchiveMarker+"%",
-	).
-		Order("finish_time").
-		Limit(limit).
-		Find(&tasks).Error
-	if err != nil {
-		return nil
+	var afterID int64
+	retryBefore := time.Now().Add(-5 * time.Minute).Unix()
+	for {
+		var batch []*Task
+		if err := DB.Where("status = ? AND finish_time >= ? AND id > ?", TaskStatusSuccess, cutoffUnix, afterID).
+			Order("id").Limit(100).Find(&batch).Error; err != nil {
+			return nil
+		}
+		for _, task := range batch {
+			if task.PrivateData.ArtifactArchivedAt == 0 && task.ResultRetrievable() &&
+				task.PrivateData.ArtifactArchiveAttemptedAt <= retryBefore {
+				tasks = append(tasks, task)
+			}
+		}
+		slices.SortFunc(tasks, func(a, b *Task) int {
+			if order := cmp.Compare(a.PrivateData.ArtifactArchiveAttemptedAt, b.PrivateData.ArtifactArchiveAttemptedAt); order != 0 {
+				return order
+			}
+			if order := cmp.Compare(a.FinishTime, b.FinishTime); order != 0 {
+				return order
+			}
+			return cmp.Compare(a.ID, b.ID)
+		})
+		if len(tasks) > limit {
+			tasks = tasks[:limit]
+		}
+		if len(batch) < 100 {
+			return tasks
+		}
+		afterID = batch[len(batch)-1].ID
 	}
-	return tasks
 }
 
 // MarkTaskArtifactsArchived records the archive outcome on one task's private
@@ -419,13 +434,14 @@ func ListTerminalTasksForArtifactArchive(cutoffUnix int64, limit int) []*Task {
 // message without a timestamp keeps the failure visible and the task eligible
 // for the next retry.
 func MarkTaskArtifactsArchived(task *Task, archivedAt int64, message string) error {
-	if task == nil {
-		return errors.New("task is required")
+	if task == nil || task.ID == 0 {
+		return errors.New("persisted task is required")
 	}
 	privateData := task.PrivateData
 	privateData.ArtifactArchivedAt = archivedAt
 	privateData.ArtifactArchiveError = message
-	return DB.Model(&Task{}).Where("task_id = ?", task.TaskID).Update("private_data", privateData).Error
+	privateData.ArtifactArchiveAttemptedAt = common.GetTimestamp()
+	return DB.Model(&Task{}).Where("id = ?", task.ID).Update("private_data", privateData).Error
 }
 
 func GetAllUnFinishSyncTasks(limit int) []*Task {

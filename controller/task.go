@@ -341,12 +341,24 @@ func TaskArtifactContent(c *gin.Context) {
 		return
 	}
 	artifactKey := strings.TrimSpace(c.Param("artifact_key"))
-	if !taskArtifactKeyPattern.MatchString(artifactKey) || !task.ResultRetrievable() {
+	if !taskArtifactKeyPattern.MatchString(artifactKey) {
 		writeTaskArtifactError(c, http.StatusNotFound, "artifact_not_found", "Task or artifact not found")
 		return
 	}
 	if task.Status != model.TaskStatusSuccess {
 		writeTaskArtifactError(c, http.StatusConflict, "artifact_not_ready", "Task artifacts are not ready")
+		return
+	}
+	// Local delivery is independent of the retained provider snapshot. Ownership
+	// was checked above; discarded results only expose an existing stored copy.
+	artifactStore := service.GetTaskArtifactStore()
+	if ref, resolveErr := artifactStore.Resolve(task, artifactKey); resolveErr == nil && ref != nil {
+		if serveErr := artifactStore.Serve(c, task, ref); serveErr == nil || c.Writer.Written() {
+			return
+		}
+	}
+	if !task.ResultRetrievable() {
+		writeTaskArtifactError(c, http.StatusNotFound, "artifact_not_found", "Task or artifact not found")
 		return
 	}
 	if !taskHasPluginExecution(task) {
@@ -379,15 +391,6 @@ func TaskArtifactContent(c *gin.Context) {
 	if !found {
 		writeTaskArtifactError(c, http.StatusNotFound, "artifact_not_found", "Task or artifact not found")
 		return
-	}
-	artifactStore := service.GetTaskArtifactStore()
-	if ref, resolveErr := artifactStore.Resolve(task, artifactKey); resolveErr == nil && ref != nil {
-		// A stored copy can disappear between Resolve and Serve (retention cleanup).
-		// Falling back to the upstream proxy is only possible while nothing has been
-		// written yet, so a partially written response is never restarted.
-		if serveErr := artifactStore.Serve(c, task, ref); serveErr == nil || c.Writer.Written() {
-			return
-		}
 	}
 
 	adaptor, err := initTaskArtifactAdaptor(task)

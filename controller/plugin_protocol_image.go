@@ -1,10 +1,15 @@
 package controller
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -18,6 +23,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	artifacttypes "github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -164,6 +170,55 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 				continue
 			}
 			item["b64_json"] = encoded
+		}
+	}
+	if pinned.Plugin.Meta.Key == "gemini-image" && task.PrivateData.ResultDiscarded {
+		store := service.GetTaskArtifactStore()
+		if store.Enabled() {
+			for index, entry := range data {
+				item, ok := entry.(map[string]any)
+				if !ok {
+					continue
+				}
+				var content io.Reader
+				mimeType := ""
+				if encoded, ok := item["b64_json"].(string); ok && encoded != "" {
+					content = base64.NewDecoder(base64.StdEncoding, strings.NewReader(encoded))
+				} else if rawURL, ok := item["url"].(string); ok && rawURL != "" {
+					if strings.HasPrefix(rawURL, "data:") {
+						prefix, encoded, found := strings.Cut(rawURL, ",")
+						if found && strings.HasSuffix(prefix, ";base64") {
+							mimeType = strings.TrimSuffix(strings.TrimPrefix(prefix, "data:"), ";base64")
+							content = base64.NewDecoder(base64.StdEncoding, strings.NewReader(encoded))
+						}
+					} else if parsed, parseErr := url.Parse(rawURL); parseErr == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && service.ValidateSSRFProtectedFetchURL(rawURL) == nil {
+						fetchCtx, cancel := context.WithTimeout(c.Request.Context(), 45*time.Second)
+						request, requestErr := http.NewRequestWithContext(fetchCtx, http.MethodGet, rawURL, nil)
+						if requestErr == nil {
+							client := *service.GetSSRFProtectedHTTPClient()
+							client.Timeout = 45 * time.Second
+							resp, fetchErr := client.Do(request)
+							if fetchErr == nil {
+								if resp.StatusCode == http.StatusOK && resp.ContentLength <= 64<<20 {
+									imageBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, (64<<20)+1))
+									if readErr == nil && len(imageBytes) <= 64<<20 {
+										mimeType, _, _ = mime.ParseMediaType(resp.Header.Get("Content-Type"))
+										content = bytes.NewReader(imageBytes)
+									}
+								}
+								resp.Body.Close()
+							}
+						}
+						cancel()
+					}
+				}
+				if content == nil {
+					continue
+				}
+				if _, err := store.Persist(c.Request.Context(), task, artifacttypes.TaskArtifact{Key: fmt.Sprintf("image_%d", index), Type: "image", MimeType: mimeType}, content); err != nil {
+					logger.LogWarn(c, fmt.Sprintf("gemini image artifact storage failed for task %s: %s", task.TaskID, common.MaskSensitiveInfo(err.Error())))
+				}
+			}
 		}
 	}
 	c.JSON(http.StatusOK, response)

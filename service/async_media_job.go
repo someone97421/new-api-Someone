@@ -272,6 +272,11 @@ func executeAsyncMediaJob(ctx context.Context, job *model.AsyncMediaJob) error {
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
 		return finishAsyncMediaJob(job, model.AsyncMediaJobStatusSucceeded, model.AsyncMediaBillingSettled, response.StatusCode, originTaskID, payload, contentType, "", now)
 	}
+	if response.StatusCode == http.StatusGatewayTimeout && originTaskID != "" {
+		// The official task is durable and will be polled independently. Keep the
+		// request for rendering its terminal result without submitting again.
+		return finishAsyncMediaJob(job, model.AsyncMediaJobStatusAwaitingTask, model.AsyncMediaBillingReconciliationPending, response.StatusCode, originTaskID, nil, "", "", now)
+	}
 	billing := model.AsyncMediaBillingNotCharged
 	if response.StatusCode >= 500 {
 		// An observation timeout leaves a durable task that settles later, and a
@@ -297,6 +302,9 @@ func finishAsyncMediaJob(job *model.AsyncMediaJob, status model.AsyncMediaJobSta
 		responsePath = stored
 	}
 	expiresAt := model.AsyncMediaJobExpiry(now, constant.AsyncMediaRetentionHours)
+	if status == model.AsyncMediaJobStatusAwaitingTask {
+		return model.CompleteAsyncMediaJob(job, status, billingStatus, httpStatus, originTaskID, "", "", "", 0, expiresAt)
+	}
 	if err := model.CompleteAsyncMediaJob(job, status, billingStatus, httpStatus, originTaskID, responsePath, contentType, message, now, expiresAt); err != nil {
 		return err
 	}
@@ -308,6 +316,9 @@ func finishAsyncMediaJob(job *model.AsyncMediaJob, status model.AsyncMediaJobSta
 // purgeExpiredAsyncMediaFiles removes stored files past their retention
 // deadline. The job row stays as an audit record of the accepted request.
 func purgeExpiredAsyncMediaFiles(now int64) int {
+	if err := model.ExpireAwaitingAsyncMediaJobs(now); err != nil {
+		common.SysError("expire waiting async media jobs failed: " + err.Error())
+	}
 	jobs := model.ListExpiredAsyncMediaJobs(now, 200)
 	purged := 0
 	for _, job := range jobs {

@@ -37,11 +37,8 @@ func taskPluginProtocolHandlers(protocol, operation string) ([]gin.HandlerFunc, 
 	case "openai_image.generate", "openai_image.edit":
 		return []gin.HandlerFunc{
 			middleware.RouteTag("relay"), middleware.SystemPerformanceCheck(), middleware.TokenAuth(),
-			// An explicitly asynchronous image request (`?async=true`) is accepted as a
-			// durable job here and replayed by the background worker; every other request
-			// keeps the synchronous OpenAI Images contract.
-			middleware.AsyncMediaEnqueue(),
-			middleware.ModelRequestRateLimit(), middleware.PinTaskPluginEndpoint(), middleware.PrepareTaskPluginEndpoint(), middleware.Distribute(),
+			middleware.ModelRequestRateLimit(), middleware.AsyncMediaEnqueue(),
+			middleware.PinTaskPluginEndpoint(), middleware.PrepareTaskPluginEndpoint(), middleware.Distribute(),
 			func(c *gin.Context) {
 				controller.RelayTaskPluginEndpoint(c, func(c *gin.Context) { controller.Relay(c, types.RelayFormatOpenAIImage) })
 			},

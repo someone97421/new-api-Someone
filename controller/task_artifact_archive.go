@@ -54,6 +54,9 @@ func (taskArtifactArchiveHandler) Run(ctx context.Context, task *model.SystemTas
 // are excluded by the candidate query, so finished work never blocks newer work.
 const taskArtifactArchiveBatchSize = 5
 
+// The deadline covers redirects, response headers, and the complete download.
+var taskArtifactArchiveTimeout = 5 * time.Minute
+
 type taskArtifactArchiveSummary struct {
 	Archived int `json:"archived"`
 	Skipped  int `json:"skipped"`
@@ -146,6 +149,9 @@ func archiveTaskArtifacts(ctx context.Context, store service.TaskArtifactStore, 
 		}
 
 		descriptor, err := resolveArtifactContentDescriptor(task, artifact.Key)
+		if err == nil && descriptor == nil {
+			err = errors.New("content request descriptor is nil")
+		}
 		if err != nil || descriptor == nil {
 			logger.LogWarn(ctx, fmt.Sprintf("failed to resolve content request for task %s artifact %s: %s", task.TaskID, artifact.Key, redactArtifactLogError(err)))
 			if firstErr == nil {
@@ -201,6 +207,11 @@ func resolveArtifactContentDescriptor(task *model.Task, artifactKey string) (*re
 }
 
 func fetchAndPersistArtifact(ctx context.Context, store service.TaskArtifactStore, task *model.Task, artifact relaychannel.TaskArtifact, descriptor *relaychannel.TaskContentRequest) error {
+	ctx, cancel := context.WithTimeout(ctx, taskArtifactArchiveTimeout)
+	defer cancel()
+	if descriptor == nil {
+		return errors.New("content request descriptor is nil")
+	}
 	rawURL := strings.TrimSpace(descriptor.URL)
 	if rawURL == "" {
 		return errors.New("empty descriptor URL")
@@ -244,6 +255,26 @@ func fetchAndPersistArtifact(ctx context.Context, store service.TaskArtifactStor
 		if err != nil {
 			return err
 		}
+	}
+	client = taskMediaRedirectClient(client, proxy, nil, nil, descriptor.Credentialless)
+	checkRedirect := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if err := checkRedirect(req, via); err != nil {
+			return err
+		}
+		// net/http rebuilds headers from the original request on every hop.
+		// Once a chain crosses origins, keep credentials and replayable bodies
+		// stripped even when a later redirect stays on the destination origin.
+		for _, previous := range via {
+			if !sameTaskMediaOrigin(previous.URL, req.URL) {
+				req.Header = make(http.Header)
+				req.Body = http.NoBody
+				req.GetBody = nil
+				req.ContentLength = 0
+				break
+			}
+		}
+		return nil
 	}
 
 	var bodyReader io.Reader

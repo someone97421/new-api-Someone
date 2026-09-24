@@ -245,7 +245,7 @@
 
 ## 执行记录
 
-- 当前状态：全部阶段实施完成，交付物、配置与文档就位；剩余为需要真实供应商/数据库实例的验收项。
+- 当前状态：代码交付已完成本轮复审修复；真实 MySQL/PostgreSQL、供应商和跨节点验收仍受环境限制，不能宣称全部验收完成。
 - 基线：当前分支 `main-upstream-rebase-20260906`，合并 `upstream/main`（实际 SHA `d04c118c8`）后的提交 `4e525d5a2`。官方 `openai_image` / `openai_video` / `openai_responses` 宿主协议、多渠道任务插件绑定、任务用量表达式均已就位。
 - 旧定制处置（阶段 1）：渠道级 `video_task_endpoints` 定制（DTO、校验、插件上下文注入、Sora 插件路径覆盖）已按官方实现替换，端点差异改由供应商插件承接；保留三处最小扩展——`TaskEnabled` 管理开关入口、管理员按需查看任务数据（`GET /api/task/:task_id/data` + 任务详情“查看任务数据”）；任务详情不维护第二套计费展示，计费明细沿用官方用法日志计费组件。
 - 关键决策：Gemini 生图沿用旧实现验证过的 `:generateContent` + `generationConfig.imageConfig` 默认形态，`image_config_mode: response_format` 保留兼容分支；别名在插件内映射且渠道模型映射优先；异步作业用受理者令牌重放原请求，计费与结算保持官方唯一链路。
@@ -257,6 +257,9 @@
 - 已执行检查：`go build`（除根包 `web/dist` 内嵌缺失，全部包通过）；`go vet`（service/model/middleware/controller/router/plugins）；`go test ./plugins/`、`./service/ -run 'AsyncMediaJob|TaskArtifact'`、`./model/`、`./router/`；前端 `tsgo -b`（改动文件 0 错误，另 8 处为上游既有/依赖版本差异）、i18n 同步脚本无改动。
 - 已知既有问题（与本次改动无关，已在基线 4e525d5a2 复现）：Windows 下 `TestUpdateOptionAliasBillingExprUsesPluginSchema`、`TestSharedModelPluginPricingDatabaseMatrix/sqlite` 因 SQLite 句柄未释放导致 TempDir 清理失败；`./service/` 全量并行运行时的渠道亲和缓存用例顺序依赖失败。
 - 未验证（需外部条件）：真实 Gemini/自定义站点联调（站点 URL、模型名、密钥）、真实上游媒体拉取与跨节点共享目录、MySQL/PostgreSQL 上的新增表迁移（缺少实例与 `TEST_MYSQL_DSN`/`TEST_POSTGRES_DSN`）。
+
+- 复审修复（本次）：异步受理前置模型限流、拒绝流式结果、限定每用户未结束作业；官方图片任务观察超时后进入 `awaiting_task`，查询时从官方任务渲染结果，不重复提交；Gemini 立即完成结果直接归档本地图片。产物归档增加下载截止、凭据跨源跳转限制、失败冷却和候选轮转；本地文件以隔离的散列名保存，旧视频与未持久化图片优先读取本地副本。以上变化不更改官方计费链路。
+- 本次直接相关检查：`go test ./service ./controller -run 'TestAsyncMediaJob|TestServeTaskPluginImageProtocol' -count=1`、`go test ./controller -run '^TestServeGeminiImageProtocolArchivesDiscardedResult$' -count=1` 均通过；产物归档局部用例在 SQLite 3.50.4 通过。真实 MySQL/PostgreSQL 的数据库行为矩阵及真实供应商、跨节点联调仍待环境支持，不能视为完整验收。
 
 ## 参考证据
 

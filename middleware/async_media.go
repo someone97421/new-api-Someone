@@ -53,7 +53,8 @@ func AsyncMediaEnqueue() gin.HandlerFunc {
 			return
 		}
 		var payload struct {
-			Model string `json:"model"`
+			Model  string `json:"model"`
+			Stream bool   `json:"stream"`
 		}
 		if err := common.Unmarshal(body, &payload); err != nil {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, "request body must be a JSON object")
@@ -62,6 +63,19 @@ func AsyncMediaEnqueue() gin.HandlerFunc {
 		modelName := strings.TrimSpace(payload.Model)
 		if modelName == "" {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, "field model is required")
+			return
+		}
+		if payload.Stream {
+			abortWithOpenAiMessage(c, http.StatusBadRequest, "asynchronous media requests do not support streaming responses")
+			return
+		}
+		pending, countErr := model.CountPendingAsyncMediaJobs(common.GetContextKeyInt(c, constant.ContextKeyUserId))
+		if countErr != nil {
+			abortWithOpenAiMessage(c, http.StatusInternalServerError, "failed to check asynchronous media capacity")
+			return
+		}
+		if pending >= 20 {
+			abortWithOpenAiMessage(c, http.StatusTooManyRequests, "too many unfinished asynchronous media jobs")
 			return
 		}
 

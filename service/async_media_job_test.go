@@ -135,6 +135,18 @@ func TestAsyncMediaJobQueueLifecycle(t *testing.T) {
 	assert.Greater(t, stored.ExpiresAt, now)
 	assert.NoFileExists(t, first.RequestFile)
 
+	// A timed-out image bridge keeps the request for rendering after the
+	// official task finishes; it is not replayed and still counts as pending.
+	require.NoError(t, finishAsyncMediaJob(secondClaim[0], model.AsyncMediaJobStatusAwaitingTask, model.AsyncMediaBillingReconciliationPending, 504, "task_pending", nil, "", "", now))
+	waiting, err := model.GetAsyncMediaJob(second.JobID)
+	require.NoError(t, err)
+	assert.Equal(t, model.AsyncMediaJobStatusAwaitingTask, waiting.Status)
+	assert.Equal(t, "task_pending", waiting.OriginTaskID)
+	assert.FileExists(t, second.RequestFile)
+	pending, err := model.CountPendingAsyncMediaJobs(second.UserId)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, pending)
+
 	// A job whose worker disappeared is failed for reconciliation, never replayed.
 	require.NoError(t, model.CompleteAsyncMediaJob(second, model.AsyncMediaJobStatusRunning, "", 0, "", "", "", "", now, 0))
 	recovered := model.RecoverStaleAsyncMediaJobs(now+1, now+2, now+3)

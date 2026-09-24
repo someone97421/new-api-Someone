@@ -19,14 +19,14 @@
 | `ASYNC_MEDIA_RETENTION_HOURS` | `168` | 响应结果保留期限（小时），从作业完成时刻起算；到期后删除文件，作业行保留为审计记录。 |
 | `ASYNC_MEDIA_WORKERS` | `2` | 每轮调度最多领取并串行执行的作业数（上限 5）。 |
 | `ASYNC_MEDIA_MAX_REQUEST_MB` | `8` | 受理请求体上限，超出返回 413。 |
-| `ASYNC_MEDIA_STALE_MINUTES` | `30` | 执行中作业超过该时长仍未结束即判定为 worker 中断，转为失败并标记待对账。 |
+| `ASYNC_MEDIA_STALE_MINUTES` | `30` | 执行中作业超过该时长仍未结束即判定为 worker 中断，转为失败并标记待对账；已关联官方任务的观察超时另行等待任务终态。 |
 
 ### 1.2 本地产物归档
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `TASK_ARTIFACT_STORE_MODE` | `upstream` | `upstream`：产物一律实时从上游读取；`local`：启用本地归档读取优先；`s3` 仍为未实现并回落 `upstream`。 |
-| `TASK_ARTIFACT_STORE_LOCAL_DIR` | `./data/task-artifacts` | 本地归档目录，按 `{任务ID}/{产物键}` 存放，附带 `.meta.json` 记录 MIME、大小、SHA-256 与归档时间。 |
+| `TASK_ARTIFACT_STORE_LOCAL_DIR` | `./data/task-artifacts` | 本地归档目录，按 `{任务ID}/{产物键 SHA-256}` 存放；独立 `.meta.json` 记录 MIME、大小、SHA-256 与归档时间。 |
 | `TASK_ARTIFACT_STORE_RETENTION_HOURS` | `168` | 归档保留期限（小时），从归档时刻起算，取值 1..8760。 |
 
 配置非法时启动日志会记录原因并回落 `upstream`（不阻断启动）。
@@ -99,7 +99,7 @@ curl -sS "$BASE/v1/async/tasks/job_0123456789abcdef0123456789abcdef" \
   -H "Authorization: Bearer sk-<token>"
 ```
 
-响应字段：`id`、`object`、`status`（`queued`/`running`/`succeeded`/`failed`）、`billing_status`（`settled`/`not_charged`/`reconciliation_pending`）、`model`、`http_status`、`task_id`（官方任务行 ID，用于在任务日志中定位该次生成）、`error`、`created_at`、`started_at`、`completed_at`、`expires_at`、`content_type`，成功时附 `data`（重放请求返回的原始 JSON，即客户端本会收到的同步响应）。
+响应字段：`id`、`object`、`status`（`queued`/`running`/`awaiting_task`/`succeeded`/`failed`）、`billing_status`（`settled`/`not_charged`/`reconciliation_pending`）、`model`、`http_status`、`task_id`（官方任务行 ID，用于在任务日志中定位该次生成）、`error`、`created_at`、`started_at`、`completed_at`、`expires_at`、`content_type`，成功时附 `data`（重放请求返回的原始 JSON，即客户端本会收到的同步响应）。
 
 只读令牌即可查询，且只能查询本人作业。管理员分页列表：`GET /api/task/async?page=1&page_size=20&status=failed`。
 
@@ -110,6 +110,8 @@ curl -sS "$BASE/v1/async/tasks/job_0123456789abcdef0123456789abcdef" \
 * 客户端断开或在 `status_url` 上等待，都不影响已受理作业：重放与结算在后台完成。
 * 重启与中断规则：`running` 作业超过 `ASYNC_MEDIA_STALE_MINUTES` 仍未结束，会被判定为 worker 中断，记为 `failed` + `reconciliation_pending`，**绝不自动重放**（重放可能重复生成并重复计费，需要人工对账）。连接从未建立的失败（dial 失败）记为 `not_charged`。
 * `billing_status` 是投递侧摘要，权威账单仍以消费日志为准：2xx 记为 `settled`；4xx 记为 `not_charged`（官方链路在返回错误前已退款）；5xx 与已发出但未收到响应的情况记为 `reconciliation_pending`。
+* 受理沿用模型请求限流；每个用户最多保留 20 个未结束作业，超过时返回 429。显式异步请求只支持非流式 JSON，`stream: true` 返回 400。
+* 官方图片桥等待超过协议时限并返回任务 ID 时，作业转为 `awaiting_task`，保留请求体供查询时从官方任务渲染结果，绝不重发生成请求。官方任务成功后查询会交付 Images JSON；失败则按官方任务失败记录。等待超过保留期仍无人查询时，作业变为失败并删除请求文件。
 * 不支持取消：官方任务系统没有取消能力，已受理作业按上游终态或超时结算。
 * 视频不需要该包装：官方 `openai_video` 协议本身就是「提交返回任务 ID + 查询 + 下载」，直接使用 `POST /v1/videos` 与 `GET /v1/videos/:id`。
 
@@ -132,12 +134,12 @@ u("resolution") == "1080p" ? tier("1080p", u("seconds") * 0.05) : tier("720p", u
 
 ## 5. 本地媒体归档
 
-* 把 `TASK_ARTIFACT_STORE_MODE` 设为 `local` 即启用。归档由系统任务 `task_artifact_archive` 每 60 秒执行：只处理近期完成（保留期限内）且状态为 `SUCCESS` 的任务，每轮最多 5 个任务、产物串行拉取。
-* 读取顺序：产物内容接口先查本地副本（`Resolve`），命中即由本地文件服务（支持 Range/HEAD/条件请求，并带与上游代理一致的安全响应头）；未命中或已过期则回落到上游代理，行为和未启用时一致。
-* 过期与失败：保留期限从归档时刻起算，过期后本地副本被清理，接口回落上游；上游链接已失效时客户端会收到上游/代理错误，这是过期后的确定行为。归档失败只记警告并在下一轮重试，**不会**把任务标记为失败，也不会触发重新生成或重复计费。
-* 归档进度与失败可见性：任务产物全部归档（或该任务没有产物）后，会在任务私有数据记录 `artifact_archived_at` 并退出归档候选，避免固定批次被历史任务占满；失败时记录 `artifact_archive_error` 供排查，同时保持任务可重试，日志中的供应商 URL 已脱敏。
-* 多节点：`local` 模式要求各节点共享同一目录（例如 NFS）；否则异机读不到副本时会自动回落上游代理。单节点部署无此约束。
-* 显式异步作业的响应体保留在 `ASYNC_MEDIA_DIR`，与产物归档相互独立；作业响应过期后 `GET /v1/async/tasks/:id` 仍返回状态与 `task_id`，只是不再返回 `data`。
+* 把 `TASK_ARTIFACT_STORE_MODE` 设为 `local` 即启用。系统任务 `task_artifact_archive` 每 60 秒处理近期成功且可检索的任务，每轮最多 5 个；单次下载最长 5 分钟，失败后冷却 5 分钟重试。Gemini 立即完成的图片在同步响应前直接保存到同一存储。
+* 产物内容接口优先读取本地副本（支持 Range/HEAD/条件请求）；未命中时，可检索任务回落上游。过期后清理本地文件，若上游链接已失效则返回代理错误；不保留任务正文的 Gemini 图片在副本过期后返回 404。
+* 归档进度与失败分别记录在任务私有数据的 `artifact_archived_at` 和 `artifact_archive_error`，不改变生成任务状态或计费。旧视频任务也优先读取本地副本。
+* Gemini 图片的本地副本按 `image_0`、`image_1` 等产物键，通过 `GET /v1/tasks/{task_id}/artifacts/{artifact_key}/content` 读取；同步 Images JSON 保持原样。
+* 多节点 `local` 模式要求各节点共享同一目录（例如 NFS）；异机未命中本地副本时，可检索任务会回落上游。
+* 显式异步作业响应体保留在 `ASYNC_MEDIA_DIR`，与产物归档独立；作业响应过期后仍可查询状态与 `task_id`，但不再返回 `data`。
 
 ## 6. 排障
 
@@ -160,5 +162,5 @@ u("resolution") == "1080p" ? tier("1080p", u("seconds") * 0.05) : tier("720p", u
 ## 7. 确定性样例与回归
 
 * 插件确定性样例：`plugins/gemini_image_plugin_test.go`、`plugins/openai_task_plugins_test.go`（覆盖解码、校验、请求构建、同步与轮询两条结果分支、状态映射、用量事实与产物拉取）。
-* 异步作业与产物存储：`service/async_media_job_test.go`（领取唯一性、中断恢复、完成与过期清理、文件路径防护）、`service/task_artifact_local_store_test.go`（落盘、Range/HEAD、过期、清理）。
+* 异步作业与产物存储：`service/async_media_job_test.go`（领取唯一性、中断恢复、等待官方任务、完成与过期清理、文件路径防护）、`service/task_artifact_local_store_test.go`（落盘、Range/HEAD、文件键隔离、过期与清理）、`controller/task_generic_test.go`（本地交付、重定向与超时）、`controller/plugin_protocol_test.go`（Gemini 立即完成归档）。
 * 未验证项：真实供应商联调（需要站点 URL、模型名与密钥）、真实上游媒体拉取与跨节点共享目录部署、MySQL/PostgreSQL 上的新增表迁移（需要真实实例）。

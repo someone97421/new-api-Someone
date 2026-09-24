@@ -24,14 +24,20 @@ import (
 var safeArtifactIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 func validateSafeArtifactIdentifier(id string) bool {
-	id = strings.TrimSpace(id)
-	if id == "" || len(id) > 128 {
+	if id != strings.TrimSpace(id) || id == "" || len(id) > 128 {
 		return false
 	}
 	if id == "." || id == ".." || strings.Contains(id, "..") || strings.ContainsAny(id, `/\`) {
 		return false
 	}
 	return safeArtifactIdentifierPattern.MatchString(id)
+}
+
+// A fixed-size filename keeps provider keys separate from sidecars and temporary
+// files, including on filesystems with case-insensitive names.
+func localArtifactFilename(key string) string {
+	digest := sha256.Sum256([]byte(key))
+	return "artifact-" + hex.EncodeToString(digest[:]) + ".data"
 }
 
 // LocalArtifactMeta holds sidecar metadata for a locally stored artifact.
@@ -198,7 +204,7 @@ func (s *LocalArtifactStore) Persist(ctx context.Context, task *model.Task, arti
 		return nil, err
 	}
 
-	targetPath := filepath.Join(taskDir, artifact.Key)
+	targetPath := filepath.Join(taskDir, localArtifactFilename(artifact.Key))
 	sidecarPath := targetPath + ".meta.json"
 
 	if err := os.Rename(tempName, targetPath); err != nil {
@@ -210,7 +216,7 @@ func (s *LocalArtifactStore) Persist(ctx context.Context, task *model.Task, arti
 	}
 	cleaned = true
 
-	relKey := filepath.ToSlash(filepath.Join(task.TaskID, artifact.Key))
+	relKey := filepath.ToSlash(filepath.Join(task.TaskID, filepath.Base(targetPath)))
 	return &StoredArtifactRef{
 		Backend:   "local",
 		Bucket:    "",
@@ -227,8 +233,16 @@ func (s *LocalArtifactStore) Resolve(task *model.Task, artifactKey string) (*Sto
 		return nil, errors.New("invalid task ID or artifact key")
 	}
 
-	targetPath := filepath.Join(s.localDir, task.TaskID, artifactKey)
+	targetPath := filepath.Join(s.localDir, task.TaskID, localArtifactFilename(artifactKey))
 	stat, err := os.Stat(targetPath)
+	// Read files written before encoded filenames were introduced. Reserved
+	// legacy names can denote metadata or temporary files, never safe content.
+	legacyKey := strings.TrimRight(strings.ToLower(artifactKey), ".")
+	if os.IsNotExist(err) && !strings.HasSuffix(legacyKey, ".meta.json") &&
+		!strings.HasPrefix(legacyKey, ".tmp-") && !strings.HasPrefix(legacyKey, "artifact-") {
+		targetPath = filepath.Join(s.localDir, task.TaskID, artifactKey)
+		stat, err = os.Stat(targetPath)
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -274,7 +288,7 @@ func (s *LocalArtifactStore) Resolve(task *model.Task, artifactKey string) (*Sto
 		return nil, nil
 	}
 
-	relKey := filepath.ToSlash(filepath.Join(task.TaskID, artifactKey))
+	relKey := filepath.ToSlash(filepath.Join(task.TaskID, filepath.Base(targetPath)))
 	return &StoredArtifactRef{
 		Backend:   "local",
 		Bucket:    "",

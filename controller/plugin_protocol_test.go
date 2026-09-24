@@ -1713,6 +1713,33 @@ func TestServeTaskPluginImageProtocolRendersImmediateResultAndInlinesBase64(t *t
 	}
 }
 
+func TestServeGeminiImageProtocolArchivesDiscardedResult(t *testing.T) {
+	store := service.NewLocalArtifactStore(t.TempDir(), 24)
+	service.SetTaskArtifactStore(store)
+	t.Cleanup(func() { service.SetTaskArtifactStore(nil) })
+	pinned := imageProtocolTestEndpoint(t)
+	pinned.Plugin.Meta.Key = "gemini-image"
+	c, recorder := newImageProtocolTestContext("")
+	deps := pluginProtocolTestDeps()
+	deps.submit = func(_ *gin.Context, info *relaycommon.RelayInfo) (*taskSubmissionOutcome, *dto.TaskError) {
+		outcome := imageProtocolTestOutcome(info, model.TaskStatusSuccess, "data:image/png;base64,QUFB")
+		outcome.Task.Platform = constant.TaskPlatform("gemini-image")
+		outcome.Task.PrivateData.ResultDiscarded = true
+		return outcome, nil
+	}
+	serveTaskPluginImageProtocol(c, pinned, deps)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	task := &model.Task{TaskID: "task_image"}
+	ref, err := store.Resolve(task, "image_0")
+	require.NoError(t, err)
+	require.NotNil(t, ref)
+	result := httptest.NewRecorder()
+	readCtx, _ := gin.CreateTestContext(result)
+	readCtx.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	require.NoError(t, store.Serve(readCtx, task, ref))
+	assert.Equal(t, "AAA", result.Body.String())
+}
+
 // An asynchronous vendor task is polled inside the request until it is
 // terminal; a failure and the protocol timeout become OpenAI error envelopes
 // while the durable task stays with the background poller.

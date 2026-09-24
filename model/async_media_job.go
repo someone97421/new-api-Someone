@@ -16,10 +16,11 @@ import (
 type AsyncMediaJobStatus string
 
 const (
-	AsyncMediaJobStatusQueued    AsyncMediaJobStatus = "queued"
-	AsyncMediaJobStatusRunning   AsyncMediaJobStatus = "running"
-	AsyncMediaJobStatusSucceeded AsyncMediaJobStatus = "succeeded"
-	AsyncMediaJobStatusFailed    AsyncMediaJobStatus = "failed"
+	AsyncMediaJobStatusQueued       AsyncMediaJobStatus = "queued"
+	AsyncMediaJobStatusRunning      AsyncMediaJobStatus = "running"
+	AsyncMediaJobStatusAwaitingTask AsyncMediaJobStatus = "awaiting_task"
+	AsyncMediaJobStatusSucceeded    AsyncMediaJobStatus = "succeeded"
+	AsyncMediaJobStatusFailed       AsyncMediaJobStatus = "failed"
 )
 
 // Billing states recorded on the job. `not_charged` means the replayed request
@@ -110,6 +111,13 @@ func GetAsyncMediaJobForUser(jobID string, userId int) (*AsyncMediaJob, error) {
 		return nil, gorm.ErrRecordNotFound
 	}
 	return job, nil
+}
+
+// CountPendingAsyncMediaJobs bounds accepted but undelivered work for one owner.
+func CountPendingAsyncMediaJobs(userID int) (int64, error) {
+	var count int64
+	err := DB.Model(&AsyncMediaJob{}).Where("user_id = ? AND status IN ?", userID, []AsyncMediaJobStatus{AsyncMediaJobStatusQueued, AsyncMediaJobStatusRunning, AsyncMediaJobStatusAwaitingTask}).Count(&count).Error
+	return count, err
 }
 
 // ClaimQueuedAsyncMediaJobs claims up to limit queued jobs for this worker. The
@@ -213,6 +221,19 @@ func ListAsyncMediaJobs(offset, limit int, status string) ([]*AsyncMediaJob, int
 		return nil, 0, err
 	}
 	return jobs, total, nil
+}
+
+// ExpireAwaitingAsyncMediaJobs closes delivery attempts whose retained request
+// has passed its deadline; the underlying official task remains authoritative.
+func ExpireAwaitingAsyncMediaJobs(now int64) error {
+	return DB.Model(&AsyncMediaJob{}).
+		Where("status = ? AND expires_at > 0 AND expires_at < ?", AsyncMediaJobStatusAwaitingTask, now).
+		Updates(map[string]any{
+			"status":       AsyncMediaJobStatusFailed,
+			"error":        "the task result was not collected before the retention deadline",
+			"completed_at": now,
+			"updated_at":   now,
+		}).Error
 }
 
 // ListExpiredAsyncMediaJobs returns jobs whose stored response passed its
