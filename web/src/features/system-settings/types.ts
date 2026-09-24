@@ -338,6 +338,7 @@ export type BillingSettings = {
 }
 
 export type OperationsSettings = {
+  TaskEnabled: boolean
   DefaultCollapseSidebar: boolean
   DemoSiteEnabled: boolean
   SelfUseModeEnabled: boolean

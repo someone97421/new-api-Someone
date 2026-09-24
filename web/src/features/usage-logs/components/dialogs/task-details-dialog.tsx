@@ -18,18 +18,35 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { Shield01Icon, Wrench01Icon } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
+import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
 import { StatusBadge } from '@/components/status-badge'
 import { Label } from '@/components/ui/label'
+import { DynamicPricingBreakdown } from '@/features/pricing/components/dynamic-pricing-breakdown'
 import { formatLogQuota, formatTimestampToDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
+import { getTaskData } from '../../api'
+import { decodeBillingExprB64 } from '../../lib/format'
 import { taskActionMapper, taskStatusMapper } from '../../lib/mappers'
 import { resolveTaskDetailAccess } from '../../lib/task-details'
 import type { TaskLog } from '../../types'
 import { PluginAuthorLink } from '../plugin-author-link'
+
+function parseLogOther(value: string | undefined): Record<string, unknown> {
+  if (!value) return {}
+  try {
+    const parsed: unknown = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {}
+  } catch {
+    return {}
+  }
+}
 
 function DetailRow(props: {
   label: React.ReactNode
@@ -83,10 +100,20 @@ interface TaskDetailsDialogProps {
 
 export function TaskDetailsDialog(props: TaskDetailsDialogProps) {
   const { t } = useTranslation()
+  const [showTaskData, setShowTaskData] = useState(false)
+  const taskDataQuery = useQuery({
+    queryKey: ['usage-logs', 'task-data', props.log.task_id],
+    queryFn: () => getTaskData(props.log.task_id),
+    enabled: props.open && showTaskData,
+    retry: false,
+  })
   const access = resolveTaskDetailAccess(props.log, props.isAdmin, props.isRoot)
   const plugin = access.plugin
   const runtime = access.runtime
   const properties = props.log.properties
+  const other = parseLogOther(props.log.other)
+  const usageFacts = other.usage_facts
+  const billingExpr = other.expr_b64
 
   return (
     <Dialog
@@ -158,6 +185,25 @@ export function TaskDetailsDialog(props: TaskDetailsDialogProps) {
           {props.log.fail_reason ? (
             <DetailRow label={t('Fail Reason')} value={props.log.fail_reason} />
           ) : null}
+          {props.isAdmin ? (
+            <div className='space-y-2 pt-1'>
+              <button
+                type='button'
+                className='text-primary text-xs underline underline-offset-2'
+                onClick={() => setShowTaskData((value) => !value)}
+                aria-expanded={showTaskData}
+              >
+                {showTaskData ? t('Hide Task Data') : t('View Task Data')}
+              </button>
+              {showTaskData ? (
+                <pre className='bg-background max-h-64 overflow-auto rounded border p-2 text-[10px] whitespace-pre-wrap'>
+                  {taskDataQuery.isLoading
+                    ? t('Loading...')
+                    : JSON.stringify(taskDataQuery.data?.data ?? null, null, 2)}
+                </pre>
+              ) : null}
+            </div>
+          ) : null}
         </DetailSection>
 
         {props.isAdmin ? (
@@ -220,6 +266,25 @@ export function TaskDetailsDialog(props: TaskDetailsDialogProps) {
                 ) : null}
               </>
             ) : null}
+          </DetailSection>
+        ) : null}
+
+        {typeof billingExpr === 'string' && billingExpr ? (
+          <DetailSection label={t('Dynamic Pricing')}>
+            <DynamicPricingBreakdown
+              compact
+              billingExpr={decodeBillingExprB64(billingExpr)}
+              matchedTierLabel={
+                typeof other.matched_tier === 'string'
+                  ? other.matched_tier
+                  : undefined
+              }
+              usageFacts={
+                usageFacts && typeof usageFacts === 'object' && !Array.isArray(usageFacts)
+                  ? (usageFacts as Record<string, string | number>)
+                  : undefined
+              }
+            />
           </DetailSection>
         ) : null}
 

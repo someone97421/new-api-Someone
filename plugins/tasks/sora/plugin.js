@@ -82,6 +82,13 @@ function requestValues(req, model) {
   return values;
 }
 
+function taskPath(ctx, name, fallback, idKey) {
+  const configured = ctx.videoTaskEndpoints && ctx.videoTaskEndpoints[name];
+  const path = trimmed(configured) || fallback;
+  const taskId = idKey === "{task_id}" ? ctx.taskId : ctx.upstreamTaskId || ctx.originTaskId;
+  return ctx.baseUrl + path.replace(idKey, encodeURIComponent(taskId || ""));
+}
+
 export function buildSubmitRequest(ctx) {
   const req = ctx.requestBody || {};
   if (!String(req.prompt || "").trim()) throw new Error("field prompt is required");
@@ -89,7 +96,7 @@ export function buildSubmitRequest(ctx) {
   const headers = { Authorization: "Bearer " + ctx.apiKey };
   if (action === "remix") {
     headers["Content-Type"] = "application/json";
-    return { url: ctx.baseUrl + "/v1/videos/" + ctx.originTaskId + "/remix", method: "POST", headers, body: requestValues(req, ctx.upstreamModel), action };
+    return { url: taskPath(ctx, "remixPath", "/v1/videos/{video_id}/remix", "{video_id}"), method: "POST", headers, body: requestValues(req, ctx.upstreamModel), action };
   }
   if ((ctx.files || []).length) {
     const parts = [];
@@ -101,10 +108,10 @@ export function buildSubmitRequest(ctx) {
       parts.push({ name: "metadata", value: JSON.stringify(values.metadata) });
     }
     for (const file of ctx.files) parts.push({ name: file.field, fileRef: file.ref, filename: file.filename });
-    return { url: ctx.baseUrl + "/v1/videos", method: "POST", headers, bodyType: "multipart", parts };
+    return { url: ctx.baseUrl + (trimmed(ctx.videoTaskEndpoints && ctx.videoTaskEndpoints.submitPath) || "/v1/videos"), method: "POST", headers, bodyType: "multipart", parts };
   }
   headers["Content-Type"] = "application/json";
-  return { url: ctx.baseUrl + "/v1/videos", method: "POST", headers, body: requestValues(req, ctx.upstreamModel) };
+  return { url: ctx.baseUrl + (trimmed(ctx.videoTaskEndpoints && ctx.videoTaskEndpoints.submitPath) || "/v1/videos"), method: "POST", headers, body: requestValues(req, ctx.upstreamModel) };
 }
 
 export function parseSubmitResponse(ctx, resp) {
@@ -132,7 +139,7 @@ export function extractUsageOnComplete(task, taskResult, body) {
 }
 
 export function buildQueryRequest(ctx) {
-  return { url: ctx.baseUrl + "/v1/videos/" + ctx.taskId, method: "GET", headers: { Authorization: "Bearer " + ctx.apiKey } };
+  return { url: taskPath(ctx, "queryPath", "/v1/videos/{task_id}", "{task_id}"), method: "GET", headers: { Authorization: "Bearer " + ctx.apiKey } };
 }
 
 export function parseTaskResult(ctx, body) {
@@ -160,7 +167,7 @@ export function listArtifacts(task) {
 export function buildContentRequest(ctx) {
   if (ctx.artifactKey !== "video") throw new Error("artifact_not_found");
   return {
-    url: ctx.baseUrl + "/v1/videos/" + encodeURIComponent(ctx.upstreamTaskId) + "/content",
+    url: taskPath({ ...ctx, taskId: ctx.upstreamTaskId }, "contentPath", "/v1/videos/{task_id}/content", "{task_id}"),
     method: ctx.clientRequest.method,
     headers: { Authorization: "Bearer " + ctx.apiKey },
   };

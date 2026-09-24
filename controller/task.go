@@ -89,6 +89,23 @@ func GetDashboardTaskArtifacts(c *gin.Context) {
 	writeTaskArtifacts(c, task, true)
 }
 
+func GetDashboardTaskData(c *gin.Context) {
+	task, exists, err := getTaskForArtifactRequest(c, c.Param("task_id"))
+	if err != nil || !exists || task == nil {
+		writeTaskArtifactError(c, http.StatusNotFound, "task_not_found", "Task not found")
+		return
+	}
+	c.Header("Cache-Control", "private, no-store")
+	var data any
+	if len(task.Data) > 0 {
+		if err := common.Unmarshal(task.Data, &data); err != nil {
+			writeTaskArtifactError(c, http.StatusInternalServerError, "task_data_invalid", "Task data is invalid")
+			return
+		}
+	}
+	common.ApiSuccess(c, gin.H{"task_id": task.TaskID, "data": data})
+}
+
 func writeTaskArtifacts(c *gin.Context, task *model.Task, dashboard bool) {
 	c.Header("Cache-Control", "private, no-store")
 	artifacts, err := projectTaskArtifacts(task)
@@ -196,10 +213,11 @@ func initTaskArtifactAdaptor(task *model.Task) (relaychannel.TaskAdaptor, error)
 	}
 	adaptor.Init(&relaycommon.RelayInfo{
 		ChannelMeta: &relaycommon.ChannelMeta{
-			ChannelType:    channelModel.Type,
-			ChannelBaseUrl: baseURL,
-			ApiKey:         pluginKey,
-			ChannelSetting: channelModel.GetSetting(),
+			ChannelType:          channelModel.Type,
+			ChannelBaseUrl:       baseURL,
+			ApiKey:               pluginKey,
+			ChannelSetting:       channelModel.GetSetting(),
+			ChannelOtherSettings: channelModel.GetOtherSettings(),
 		},
 	})
 	return adaptor, nil

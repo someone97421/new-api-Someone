@@ -125,3 +125,11 @@ export async function getTaskArtifacts(taskId: string) {
   )
   return parseTaskArtifactsResponse(response.data)
 }
+
+export async function getTaskData(taskId: string) {
+  const response = await api.get<{ success: boolean; data?: { task_id: string; data: unknown } }>(
+    `/api/task/${encodeURIComponent(taskId)}/data`,
+    taskArtifactRequestConfig
+  )
+  return response.data
+}

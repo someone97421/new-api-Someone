@@ -1413,3 +1413,45 @@ export function parseBatchResult(){return [];}
 	assert.Equal(t, []any{"model-a", "model-b"}, captured["models"])
 	assert.Equal(t, false, captured["hasRequestBody"])
 }
+
+func TestTaskAdaptorAppliesVideoTaskEndpointOverrides(t *testing.T) {
+	service.InitHttpClient()
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.URL.Path)
+		_, _ = w.Write([]byte(`{"id":"up-1","status":"SUCCESS"}`))
+	}))
+	defer server.Close()
+
+	source := `
+export const meta = {apiVersion:1,key:"endpoint-override",name:"Endpoint Override",version:"1.0.0",author:{name:"Test"},models:["m"],fetchMode:"per_task"};
+export function buildSubmitRequest(ctx){return {url:ctx.baseUrl+"/submit"}}
+export function parseSubmitResponse(){return {taskId:"1"}}
+export function buildQueryRequest(ctx) {
+  const configured = ctx.videoTaskEndpoints && ctx.videoTaskEndpoints.queryPath;
+  const path = (configured || "/default/videos/{task_id}").replace("{task_id}", encodeURIComponent(ctx.taskId || ""));
+  return { url: ctx.baseUrl + path, method: "GET", headers: {} };
+}
+export function parseTaskResult(){return {status:"SUCCESS"}}
+`
+	plugin, err := pluginruntime.NewRegistry().Register(source, pluginruntime.Options{})
+	require.NoError(t, err)
+	task := &model.Task{PrivateData: model.TaskPrivateData{UpstreamTaskID: "up-1"}}
+
+	newAdaptor := func(endpoints *dto.VideoTaskEndpoints) *TaskAdaptor {
+		adaptor := New(plugin)
+		adaptor.Init(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelBaseUrl:       server.URL,
+			ChannelOtherSettings: dto.ChannelOtherSettings{VideoTaskEndpoints: endpoints},
+		}})
+		return adaptor
+	}
+
+	resp, err := newAdaptor(&dto.VideoTaskEndpoints{QueryPath: "/custom/videos/{task_id}"}).FetchTask(server.URL, "key", task, "")
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	resp, err = newAdaptor(nil).FetchTask(server.URL, "key", task, "")
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.Equal(t, []string{"/custom/videos/up-1", "/default/videos/up-1"}, seen)
+}

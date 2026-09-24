@@ -861,6 +861,7 @@ func (a *TaskAdaptor) BuildContentRequest(task *model.Task, artifactKey string, 
 	ctx["upstreamTaskId"] = task.GetUpstreamTaskID()
 	ctx["artifactKey"] = artifactKey
 	ctx["baseUrl"] = a.info.ChannelBaseUrl
+	a.applyVideoTaskEndpoints(ctx)
 	ctx["clientRequest"] = jsonValue(clientRequest)
 	proxy := a.info.ChannelSetting.Proxy
 	auth, err := resolveAuth(a.plugin.Meta.Auth, a.info.ApiKey, proxy)
@@ -965,6 +966,7 @@ func (a *TaskAdaptor) queryContext(task *model.Task, key, baseURL, proxy string)
 		"data":          nil,
 		"state":         nil,
 	}
+	a.applyVideoTaskEndpoints(ctx)
 	if task != nil {
 		originModel := task.Properties.OriginModelName
 		upstreamModel := task.Properties.UpstreamModelName
@@ -1025,6 +1027,22 @@ func (a *TaskAdaptor) queryCredentials() (key, baseURL, proxy string) {
 		return "", "", ""
 	}
 	return a.info.ApiKey, a.info.ChannelBaseUrl, a.info.ChannelSetting.Proxy
+}
+
+// applyVideoTaskEndpoints exposes channel-configured video endpoint path
+// overrides to plugin hooks. Contexts built before Init (or for channels
+// without overrides) silently keep the plugin's default paths.
+func (a *TaskAdaptor) applyVideoTaskEndpoints(ctx map[string]any) {
+	if a.info == nil || a.info.ChannelOtherSettings.VideoTaskEndpoints == nil {
+		return
+	}
+	endpoints := a.info.ChannelOtherSettings.VideoTaskEndpoints
+	ctx["videoTaskEndpoints"] = map[string]any{
+		"submitPath":  endpoints.SubmitPath,
+		"queryPath":   endpoints.QueryPath,
+		"contentPath": endpoints.ContentPath,
+		"remixPath":   endpoints.RemixPath,
+	}
 }
 
 func hookHTTPResponse(resp *http.Response) map[string]any {
@@ -1282,6 +1300,7 @@ func (a *TaskAdaptor) submitContext(c *gin.Context, info *relaycommon.RelayInfo)
 	ctx["upstreamModel"] = info.UpstreamModelName
 	ctx["baseUrl"] = info.ChannelBaseUrl
 	ctx["userSetting"] = info.UserSetting
+	a.applyVideoTaskEndpoints(ctx)
 	proxy := ""
 	proxy = info.ChannelSetting.Proxy
 	if auth, err := resolveAuth(a.plugin.Meta.Auth, info.ApiKey, proxy); err == nil {
