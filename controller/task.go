@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relay"
 	relaychannel "github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -91,7 +93,11 @@ func GetDashboardTaskArtifacts(c *gin.Context) {
 
 func GetDashboardTaskData(c *gin.Context) {
 	task, exists, err := getTaskForArtifactRequest(c, c.Param("task_id"))
-	if err != nil || !exists || task == nil {
+	if err != nil {
+		writeTaskArtifactError(c, http.StatusInternalServerError, "task_internal_error", "Failed to query task")
+		return
+	}
+	if !exists || task == nil || !task.ResultRetrievable() {
 		writeTaskArtifactError(c, http.StatusNotFound, "task_not_found", "Task not found")
 		return
 	}
@@ -103,7 +109,28 @@ func GetDashboardTaskData(c *gin.Context) {
 			return
 		}
 	}
-	common.ApiSuccess(c, gin.H{"task_id": task.TaskID, "data": data})
+	response := gin.H{"task_id": task.TaskID, "data": data}
+	if billing := task.PrivateData.BillingContext; billing != nil && billing.TieredSnapshot != nil {
+		snapshot := billing.TieredSnapshot
+		if snapshot.ExprString != "" {
+			// A persisted reservation snapshot does not prove final settlement.
+			// Project only display fields, never credentials or private task state.
+			preview := gin.H{
+				"expression":  snapshot.ExprString,
+				"usage_facts": snapshot.UsageFacts,
+				"tier":        snapshot.EstimatedTier,
+				"estimated":   true,
+			}
+			if execution := task.PrivateData.Execution; execution != nil && execution.TaskPlugin != nil {
+				if plugin, ok := pluginruntime.DefaultRegistry.Generation().Get(execution.TaskPlugin.Key); ok && execution.TaskPlugin.Version != "" && plugin.Meta.Version == execution.TaskPlugin.Version {
+					schema, _ := plugin.Meta.UsageForModels(task.Properties.UpstreamModelName, task.Properties.OriginModelName)
+					preview["usage_schema"] = schema
+				}
+			}
+			response["billing"] = preview
+		}
+	}
+	common.ApiSuccess(c, response)
 }
 
 func writeTaskArtifacts(c *gin.Context, task *model.Task, dashboard bool) {
@@ -128,6 +155,9 @@ func writeTaskArtifacts(c *gin.Context, task *model.Task, dashboard bool) {
 		})
 	}
 	response := gin.H{"task_id": task.TaskID, "artifacts": items}
+	if dashboard && task.Status == model.TaskStatusSuccess && task.Platform == constant.TaskPlatformSuno {
+		response["legacy_audio_clips"] = legacySunoAudioClips(task.Data)
+	}
 	if legacyVideoAvailable(task) {
 		legacyContentURL, buildErr := service.BuildTaskArtifactContentURL(task.TaskID, "video")
 		if buildErr != nil {
@@ -143,8 +173,41 @@ func writeTaskArtifacts(c *gin.Context, task *model.Task, dashboard bool) {
 	c.JSON(http.StatusOK, response)
 }
 
+// legacySunoAudioClips projects a pre-plugin Suno task's persisted snapshot
+// into the clips the dashboard audio preview renders. Task lists no longer
+// carry the snapshot, so the dashboard reads it here on demand. The snapshot
+// is either a clip array or a JSON string holding one; only clips with an
+// audio URL are kept and only preview fields are exposed.
+func legacySunoAudioClips(data json.RawMessage) []map[string]any {
+	clips := make([]map[string]any, 0)
+	if len(data) == 0 {
+		return clips
+	}
+	var items []map[string]any
+	if err := common.Unmarshal(data, &items); err != nil {
+		var encoded string
+		if common.Unmarshal(data, &encoded) != nil || common.UnmarshalJsonStr(encoded, &items) != nil {
+			return clips
+		}
+	}
+	for _, item := range items {
+		audioURL, _ := item["audio_url"].(string)
+		if strings.TrimSpace(audioURL) == "" {
+			continue
+		}
+		clip := map[string]any{"audio_url": audioURL}
+		for _, key := range []string{"clip_id", "id", "title", "tags", "duration", "image_url", "image_large_url", "metadata"} {
+			if value, ok := item[key]; ok {
+				clip[key] = value
+			}
+		}
+		clips = append(clips, clip)
+	}
+	return clips
+}
+
 func projectTaskArtifacts(task *model.Task) ([]relaychannel.TaskArtifact, error) {
-	if task == nil || task.Status != model.TaskStatusSuccess || !taskHasPluginExecution(task) {
+	if task == nil || task.Status != model.TaskStatusSuccess || !taskHasPluginExecution(task) || !task.ResultRetrievable() {
 		return []relaychannel.TaskArtifact{}, nil
 	}
 	adaptor := relay.GetTaskAdaptor(task.Platform)
@@ -305,7 +368,7 @@ func TaskArtifactContent(c *gin.Context) {
 		return
 	}
 	artifactKey := strings.TrimSpace(c.Param("artifact_key"))
-	if !taskArtifactKeyPattern.MatchString(artifactKey) {
+	if !taskArtifactKeyPattern.MatchString(artifactKey) || !task.ResultRetrievable() {
 		writeTaskArtifactError(c, http.StatusNotFound, "artifact_not_found", "Task or artifact not found")
 		return
 	}
@@ -435,6 +498,7 @@ func tasksToDto(tasks []*model.Task, fillUser bool, viewerRole int) []*dto.TaskD
 		}
 		item := relay.TaskModel2Dto(task)
 		item.LegacyVideoAvailable = legacyVideoAvailable(task)
+		item.ResultDiscarded = task.PrivateData.ResultDiscarded
 		if task.Status == model.TaskStatusSuccess {
 			item.ResultURL = ""
 			if taskFailReasonIsLegacyResultURL(task.FailReason) {

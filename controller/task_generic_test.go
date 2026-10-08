@@ -14,14 +14,14 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/billingexpr"
+	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	relaychannel "github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
-	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
 )
 
 func setupGenericTaskTest(t *testing.T) *model.Task {
@@ -29,9 +29,9 @@ func setupGenericTaskTest(t *testing.T) *model.Task {
 	originalDB := model.DB
 	previousRedisEnabled := common.RedisEnabled
 	common.RedisEnabled = false
-	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(&model.Task{}, &model.Channel{}, &model.User{}))
+	// The dialect harness lets the same fixture run against MySQL and
+	// PostgreSQL when TEST_TASK_DB_DIALECT selects them; SQLite stays the default.
+	database, _ := openTaskDialectDatabase(t, &model.Task{}, &model.Channel{}, &model.User{})
 	model.DB = database
 	t.Cleanup(func() {
 		model.DB = originalDB
@@ -139,6 +139,94 @@ func TestTaskArtifactAuthorizationKeepsForeignTasksHidden(t *testing.T) {
 	assert.False(t, exists)
 }
 
+func TestDashboardTaskDataProjectsOnlyBillingPreview(t *testing.T) {
+	task := setupGenericTaskTest(t)
+	plugin, err := pluginruntime.DefaultRegistry.Register(`
+export const meta = {apiVersion:1,key:"billing-preview-version",name:"Billing Preview",version:"2.0.0",author:{name:"Test"},models:["preview-model"],fetchMode:"per_task",usageSchema:{seconds:{type:"number",unit:"second",description:"Video generation unit price"}}};
+export function buildSubmitRequest(){return {url:"https://example.com/submit"};}
+export function parseSubmitResponse(){return {taskId:"1"};}
+export function buildQueryRequest(){return {url:"https://example.com/query"};}
+export function parseTaskResult(){return {status:"SUCCESS"};}
+`, pluginruntime.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { pluginruntime.DefaultRegistry.Unregister(plugin.Meta.Key) })
+	task.Properties.OriginModelName = "preview-model"
+	task.Data = []byte(`{"status":"completed","result":"example"}`)
+	task.PrivateData.Key = "private-channel-secret"
+	task.PrivateData.PluginState = []byte(`{"secret":"private-plugin-state"}`)
+	task.PrivateData.BillingContext = &model.TaskBillingContext{
+		TieredSnapshot: &billingexpr.BillingSnapshot{
+			ExprString: "seconds * 0.1", EstimatedTier: "standard",
+			UsageFacts: map[string]any{"seconds": 8},
+		},
+	}
+	require.NoError(t, model.DB.Save(task).Error)
+
+	for _, tc := range []struct {
+		name          string
+		owner         int
+		role          int
+		discarded     bool
+		status        int
+		pluginVersion string
+		wantSchema    bool
+	}{
+		{name: "admin preview matching plugin", owner: 8, role: common.RoleAdminUser, status: http.StatusOK, pluginVersion: "2.0.0", wantSchema: true},
+		{name: "historical plugin schema omitted", owner: 8, role: common.RoleAdminUser, status: http.StatusOK, pluginVersion: "1.0.0"},
+		{name: "unknown plugin version schema omitted", owner: 8, role: common.RoleAdminUser, status: http.StatusOK},
+		{name: "foreign user hidden", owner: 8, role: common.RoleCommonUser, status: http.StatusNotFound},
+		{name: "discarded result hidden", owner: 8, role: common.RoleAdminUser, discarded: true, status: http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			task.PrivateData.ResultDiscarded = tc.discarded
+			task.PrivateData.Execution = &model.TaskExecutionSnapshot{
+				TaskPlugin: &model.TaskPluginSnapshot{Key: plugin.Meta.Key, Version: tc.pluginVersion},
+			}
+			require.NoError(t, model.DB.Save(task).Error)
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Set("id", tc.owner)
+			c.Set("role", tc.role)
+			c.Params = gin.Params{{Key: "task_id", Value: task.TaskID}}
+			c.Request = httptest.NewRequest(http.MethodGet, "/api/task/"+task.TaskID+"/data", nil)
+			GetDashboardTaskData(c)
+			require.Equal(t, tc.status, recorder.Code, recorder.Body.String())
+			assert.NotContains(t, recorder.Body.String(), "private-channel-secret")
+			assert.NotContains(t, recorder.Body.String(), "private-plugin-state")
+			if tc.status != http.StatusOK {
+				return
+			}
+			assert.Equal(t, "private, no-store", recorder.Header().Get("Cache-Control"))
+			var response struct {
+				Data struct {
+					TaskID  string         `json:"task_id"`
+					Data    map[string]any `json:"data"`
+					Billing struct {
+						Expression  string                                    `json:"expression"`
+						UsageFacts  map[string]any                            `json:"usage_facts"`
+						Tier        string                                    `json:"tier"`
+						Estimated   bool                                      `json:"estimated"`
+						UsageSchema map[string]pluginruntime.UsageFieldSchema `json:"usage_schema"`
+					} `json:"billing"`
+				} `json:"data"`
+			}
+			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+			assert.Equal(t, task.TaskID, response.Data.TaskID)
+			assert.Equal(t, "completed", response.Data.Data["status"])
+			assert.Equal(t, "seconds * 0.1", response.Data.Billing.Expression)
+			assert.Equal(t, float64(8), response.Data.Billing.UsageFacts["seconds"])
+			assert.Equal(t, "standard", response.Data.Billing.Tier)
+			assert.True(t, response.Data.Billing.Estimated)
+			if tc.wantSchema {
+				assert.Equal(t, "second", response.Data.Billing.UsageSchema["seconds"].Unit)
+			} else {
+				assert.Nil(t, response.Data.Billing.UsageSchema)
+				assert.NotContains(t, recorder.Body.String(), `"usage_schema"`)
+			}
+		})
+	}
+}
+
 func TestDashboardTaskArtifactsReturnsLegacyCapabilityWithoutUpstreamURL(t *testing.T) {
 	task := setupGenericTaskTest(t)
 	previousSecret := common.CryptoSecret
@@ -184,6 +272,72 @@ func TestDashboardTaskArtifactsReturnsLegacyCapabilityWithoutUpstreamURL(t *test
 	))
 	assert.NotContains(t, recorder.Body.String(), "upstream.invalid")
 	assert.NotContains(t, recorder.Body.String(), "signature=secret")
+}
+
+// Task lists no longer carry the persisted snapshot, so the dashboard reads a
+// legacy Suno task's playable clips from the artifacts endpoint instead.
+func TestDashboardTaskArtifactsProjectsLegacySunoAudioClips(t *testing.T) {
+	task := setupGenericTaskTest(t)
+	task.Platform = constant.TaskPlatformSuno
+	task.Action = "MUSIC"
+	task.Data = []byte(`[{"id":"clip-1","title":"Song","audio_url":"https://cdn.example/a.mp3","metadata":{"tags":"pop","duration":30},"lyric":"private"},{"id":"clip-2","title":"No audio"}]`)
+	require.NoError(t, model.DB.Save(task).Error)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Set("id", task.UserId)
+	c.Set("role", common.RoleCommonUser)
+	c.Params = gin.Params{{Key: "task_id", Value: task.TaskID}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/task/"+task.TaskID+"/artifacts", nil)
+
+	GetDashboardTaskArtifacts(c)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Artifacts        []taskArtifactResponse `json:"artifacts"`
+			LegacyAudioClips []map[string]any       `json:"legacy_audio_clips"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.True(t, response.Success)
+	assert.Empty(t, response.Data.Artifacts)
+	require.Len(t, response.Data.LegacyAudioClips, 1)
+	assert.Equal(t, "https://cdn.example/a.mp3", response.Data.LegacyAudioClips[0]["audio_url"])
+	assert.Equal(t, "Song", response.Data.LegacyAudioClips[0]["title"])
+	assert.NotContains(t, recorder.Body.String(), "private")
+}
+
+// Task lists omit the data column; the API DTO keeps the key as null so shape
+// checks survive while the payload no longer travels with every row.
+func TestTaskListsOmitPersistedSnapshot(t *testing.T) {
+	task := setupGenericTaskTest(t)
+	task.Data = []byte(`{"data":[{"url":"https://cdn.example/a.png"}]}`)
+	require.NoError(t, model.DB.Save(task).Error)
+
+	userTasks := model.TaskGetAllUserTask(task.UserId, 0, 10, model.SyncTaskQueryParams{})
+	require.Len(t, userTasks, 1)
+	assert.Empty(t, userTasks[0].Data)
+	adminTasks := model.TaskGetAllTasks(0, 10, model.SyncTaskQueryParams{})
+	require.Len(t, adminTasks, 1)
+	assert.Empty(t, adminTasks[0].Data)
+	assert.Equal(t, task.TaskID, adminTasks[0].TaskID)
+
+	encoded, err := common.Marshal(tasksToDto(adminTasks, false, common.RoleAdminUser)[0])
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"data":null`)
+	assert.NotContains(t, string(encoded), `"result_discarded"`)
+
+	adminTasks[0].PrivateData.ResultDiscarded = true
+	encoded, err = common.Marshal(tasksToDto(adminTasks, false, common.RoleAdminUser)[0])
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"result_discarded":true`, "task lists tell the UI that an inline result was not retained")
+
+	stored, exists, err := model.GetByTaskId(task.UserId, task.TaskID)
+	require.NoError(t, err)
+	require.True(t, exists)
+	assert.JSONEq(t, string(task.Data), string(stored.Data), "single-task lookups keep the snapshot")
 }
 
 func TestTaskArtifactAccessRequiresActiveOwner(t *testing.T) {
