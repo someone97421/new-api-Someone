@@ -358,6 +358,7 @@ export type BillingSettings = {
 }
 
 export type OperationsSettings = {
+  FileRelaySettings: string
   TaskEnabled: boolean
   DefaultCollapseSidebar: boolean
   DemoSiteEnabled: boolean

@@ -83,6 +83,7 @@ func VideoProxy(c *gin.Context) {
 	}
 
 	var descriptor *relaychannel.TaskContentRequest
+	artifactKey := "video"
 	if taskHasPluginExecution(task) {
 		artifacts, projectionErr := projectTaskArtifacts(task)
 		if projectionErr == nil {
@@ -93,6 +94,7 @@ func VideoProxy(c *gin.Context) {
 				adaptor, adaptorErr := initTaskArtifactAdaptor(task)
 				if adaptorErr == nil {
 					if provider, ok := adaptor.(relaychannel.TaskContentRequestProvider); ok {
+						artifactKey = artifact.Key
 						descriptor, adaptorErr = provider.BuildContentRequest(task, artifact.Key, relaychannel.TaskArtifactClientRequest{
 							Method:  c.Request.Method,
 							Headers: taskArtifactClientHeaders(c.Request.Header),
@@ -110,6 +112,7 @@ func VideoProxy(c *gin.Context) {
 		}
 	}
 	if descriptor == nil {
+		artifactKey = "video"
 		resultURL := task.GetResultURL()
 		if isTaskMediaFallbackLoop(resultURL, task.TaskID) {
 			writeTaskMediaProxyError(c, &taskMediaProxyError{
@@ -124,12 +127,21 @@ func VideoProxy(c *gin.Context) {
 			Credentialless: true,
 		}
 	}
-	if err := proxyTaskMedia(c, task, descriptor); err != nil {
+	if err := proxyTaskMedia(c, task, artifactKey, descriptor); err != nil {
 		writeTaskMediaProxyError(c, err)
 	}
 }
 
-func proxyTaskMedia(c *gin.Context, task *model.Task, descriptor *relaychannel.TaskContentRequest) error {
+func proxyTaskMedia(c *gin.Context, task *model.Task, artifactKey string, descriptor *relaychannel.TaskContentRequest) error {
+	fileRelayConfig := system_setting.GetFileRelaySettings()
+	fileRelayCacheKey := fmt.Sprintf("task:%d:%s:%s", task.UserId, task.TaskID, artifactKey)
+	if fileRelayConfig.Enabled {
+		if ref, err := service.FindCachedRelayFile(fileRelayConfig, fileRelayCacheKey); err == nil {
+			if err := serveRelayedFile(c, ref.ID); err == nil {
+				return nil
+			}
+		}
+	}
 	if descriptor == nil {
 		return &taskMediaProxyError{
 			status: http.StatusInternalServerError, code: "artifact_plugin_error",
@@ -148,6 +160,12 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, descriptor *relaychannel.T
 			return &taskMediaProxyError{
 				status: http.StatusBadGateway, code: "artifact_request_rejected",
 				message: "Artifact request was rejected", err: errTaskMediaRequestRejected,
+			}
+		}
+		if fileRelayConfig.Enabled {
+			handled, err := relayTaskFile(c, fileRelayConfig, fileRelayCacheKey, service.FileRelaySource{URL: rawURL})
+			if handled || err != nil {
+				return err
 			}
 		}
 		if err := writeVideoDataURL(c, rawURL); err != nil {
@@ -255,6 +273,20 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, descriptor *relaychannel.T
 	}
 
 	client = taskMediaRedirectClient(client, proxy, c, clientHeaders, descriptor.Credentialless)
+	if fileRelayConfig.Enabled {
+		fullRequest := req.Clone(c.Request.Context())
+		if fullRequest.Method == http.MethodHead {
+			fullRequest.Method = http.MethodGet
+		}
+		for _, name := range []string{"Range", "If-Range", "If-None-Match", "If-Modified-Since"} {
+			fullRequest.Header.Del(name)
+		}
+		fullClient := taskMediaRedirectClient(client, proxy, c, nil, descriptor.Credentialless)
+		handled, relayErr := relayTaskFile(c, fileRelayConfig, fileRelayCacheKey, service.FileRelaySource{Request: fullRequest, Client: fullClient})
+		if handled || relayErr != nil {
+			return relayErr
+		}
+	}
 	clientWithoutBodyTimeout := *client
 	clientWithoutBodyTimeout.Timeout = 0
 	resp, err := doTaskMediaRequest(&clientWithoutBodyTimeout, req, taskMediaResponseHeaderTimeout)

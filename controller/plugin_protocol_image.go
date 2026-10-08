@@ -162,7 +162,15 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 			item["b64_json"] = encoded
 		}
 	}
-	c.JSON(http.StatusOK, response)
+	body, err := common.Marshal(response)
+	if err == nil {
+		body, err = service.RelayImageResponse(c.Request.Context(), body)
+	}
+	if err != nil {
+		respondPluginProtocolError(c, http.StatusBadGateway, "file_relay_failed", "File relay failed after generation completed")
+		return
+	}
+	c.Data(http.StatusOK, "application/json", body)
 }
 
 // waitTaskPluginImageTask polls an asynchronous image task inside the client

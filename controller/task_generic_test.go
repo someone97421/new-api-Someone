@@ -537,7 +537,7 @@ func TestProxyTaskMediaForwardsRangeAndFiltersResponseHeaders(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodGet, "/v1/tasks/task_generic/artifacts/video-main/content", nil)
 	c.Request.Header.Set("Range", "bytes=0-3")
 
-	err := proxyTaskMedia(c, task, &relaychannel.TaskContentRequest{
+	err := proxyTaskMedia(c, task, "video", &relaychannel.TaskContentRequest{
 		URL:     upstream.URL,
 		Method:  http.MethodGet,
 		Headers: map[string]string{"Authorization": "Bearer provider-secret"},
@@ -573,7 +573,7 @@ func TestProxyTaskMediaPassesThroughUnsatisfiedRange(t *testing.T) {
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodGet, "/content", nil)
 
-	require.NoError(t, proxyTaskMedia(c, task, &relaychannel.TaskContentRequest{
+	require.NoError(t, proxyTaskMedia(c, task, "video", &relaychannel.TaskContentRequest{
 		URL: upstream.URL, Method: http.MethodGet,
 	}))
 	assert.Equal(t, http.StatusRequestedRangeNotSatisfiable, recorder.Code)
@@ -669,7 +669,7 @@ func TestProxyTaskMediaAllowsOnlyCredentiallessCrossOriginRedirect(t *testing.T)
 	c.Request = httptest.NewRequest(http.MethodGet, "/content", nil)
 	c.Request.Header.Set("Range", "bytes=0-3")
 
-	err := proxyTaskMedia(c, task, &relaychannel.TaskContentRequest{
+	err := proxyTaskMedia(c, task, "video", &relaychannel.TaskContentRequest{
 		URL: source.URL, Method: http.MethodGet, Credentialless: true,
 	})
 	require.NoError(t, err)
@@ -682,7 +682,7 @@ func TestProxyTaskMediaAllowsOnlyCredentiallessCrossOriginRedirect(t *testing.T)
 	rejectedRecorder := httptest.NewRecorder()
 	rejectedContext, _ := gin.CreateTestContext(rejectedRecorder)
 	rejectedContext.Request = httptest.NewRequest(http.MethodGet, "/content", nil)
-	err = proxyTaskMedia(rejectedContext, task, &relaychannel.TaskContentRequest{
+	err = proxyTaskMedia(rejectedContext, task, "video", &relaychannel.TaskContentRequest{
 		URL: source.URL, Method: http.MethodGet,
 		Headers: map[string]string{"Authorization": "Bearer provider-secret"},
 	})
@@ -720,7 +720,7 @@ func TestCredentiallessTaskMediaDescriptorRejectsCredentialsAndBody(t *testing.T
 		{URL: "https://example.com/video", Method: http.MethodGet, Body: []byte("secret"), Credentialless: true},
 		{URL: "https://example.com/video", Method: http.MethodGet, Headers: map[string]string{"X-Key": "secret"}, Credentialless: true},
 	} {
-		err := proxyTaskMedia(c, task, descriptor)
+		err := proxyTaskMedia(c, task, "video", descriptor)
 		var proxyErr *taskMediaProxyError
 		require.ErrorAs(t, err, &proxyErr)
 		assert.Equal(t, "artifact_request_rejected", proxyErr.code)

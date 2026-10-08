@@ -27,6 +27,7 @@ import {
 } from './section-registry.tsx'
 
 const defaultOperationsSettings: OperationsSettings = {
+  FileRelaySettings: '',
   TaskEnabled: true,
   DefaultCollapseSidebar: false,
   DemoSiteEnabled: false,

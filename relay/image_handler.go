@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 
 	"github.com/gin-gonic/gin"
 )
@@ -152,7 +153,15 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 		}
 	}
 
+	var captured *service.ImageResponseCapture
+	originalWriter := c.Writer
+	if !info.IsStream && system_setting.GetFileRelaySettings().Enabled {
+		captured = service.CaptureImageResponse(originalWriter)
+		c.Writer = captured
+		defer func() { c.Writer = originalWriter }()
+	}
 	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
+	c.Writer = originalWriter
 	if newAPIError != nil {
 		// reset status code 重置状态码
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
@@ -193,5 +202,8 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 	}
 
 	service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), logContent)
+	if captured != nil {
+		captured.Send(c)
+	}
 	return nil
 }

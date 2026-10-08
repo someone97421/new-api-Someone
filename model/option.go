@@ -82,6 +82,8 @@ func InitOptionMap() {
 	common.OptionMap["Logo"] = common.Logo
 	common.OptionMap["ServerAddress"] = ""
 	common.OptionMap["TaskPublicAddress"] = system_setting.TaskPublicAddress
+	fileRelayDefaults, _ := common.Marshal(system_setting.DefaultFileRelaySettings())
+	common.OptionMap[system_setting.FileRelaySettingsKey] = string(fileRelayDefaults)
 	common.OptionMap["WorkerUrl"] = system_setting.WorkerUrl
 	common.OptionMap["WorkerValidKey"] = system_setting.WorkerValidKey
 	common.OptionMap["WorkerAllowHttpImageRequestEnabled"] = strconv.FormatBool(system_setting.WorkerAllowHttpImageRequestEnabled)
@@ -228,6 +230,10 @@ func SyncOptions(frequency int) {
 }
 
 func validateOptionValue(key string, value string) error {
+	if key == system_setting.FileRelaySettingsKey {
+		_, err := system_setting.ParseFileRelaySettings(value)
+		return err
+	}
 	if key == legacyAccessTokenRetireAtKey {
 		return errLegacyRetireAtReadOnly
 	}

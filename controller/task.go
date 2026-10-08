@@ -386,7 +386,7 @@ func TaskArtifactContent(c *gin.Context) {
 			Method:         c.Request.Method,
 			Credentialless: true,
 		}
-		if err := proxyTaskMedia(c, task, descriptor); err != nil {
+		if err := proxyTaskMedia(c, task, artifactKey, descriptor); err != nil {
 			writeTaskMediaProxyError(c, err)
 		}
 		return
@@ -432,7 +432,7 @@ func TaskArtifactContent(c *gin.Context) {
 		writeTaskArtifactError(c, http.StatusInternalServerError, "artifact_plugin_error", "Artifact content plugin failed")
 		return
 	}
-	if err := proxyTaskMedia(c, task, descriptor); err != nil {
+	if err := proxyTaskMedia(c, task, artifactKey, descriptor); err != nil {
 		writeTaskMediaProxyError(c, err)
 	}
 }
