@@ -88,11 +88,25 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 		respondTaskPluginImageError(c, taskErr)
 		return
 	}
+	// Retries can select another provider; the final response belongs to the
+	// plugin pinned by the channel that actually accepted the submission.
+	if value, exists := c.Get(pluginruntime.ContextKeyPinnedEndpoint); exists {
+		selected, ok := value.(pluginruntime.PinnedEndpoint)
+		if !ok || selected.Plugin == nil || selected.Generation != pinned.Generation ||
+			selected.Protocol != pinned.Protocol || selected.Model != pinned.Model ||
+			selected.Operation.Name != pinned.Operation.Name {
+			respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
+			return
+		}
+		pinned = selected
+	}
 	if outcome == nil || outcome.Task == nil || outcome.Task.Platform != constant.TaskPlatform(pinned.Plugin.Meta.Key) {
 		logger.LogError(c, "task protocol submission returned an invalid durable outcome")
 		respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
 		return
 	}
+	// Rendering keeps the original client body, including response_format.
+	protocolRequest.UpstreamModel = outcome.Task.Properties.UpstreamModelName
 	task := outcome.Task
 	if task.Status != model.TaskStatusSuccess && task.Status != model.TaskStatusFailure {
 		if taskErr = waitTaskPluginImageTask(c, task, deps); taskErr != nil {
@@ -122,7 +136,7 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 		respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
 		return
 	}
-	payload, err := pinned.Plugin.Engine.CallPathWithAdmissionTimeout(c.Request.Context(), deps.admissionTimeout, "protocols", []string{pinned.Protocol, "render"}, protocolRequest.JSValue(), viewValue)
+	payload, err := pinned.Plugin.Engine.CallPathWithAdmissionTimeout(c.Request.Context(), deps.admissionTimeout, "protocols", []string{pinned.Protocol, "render"}, protocolRequest.JSValueFor(pinned.Plugin.Meta), viewValue)
 	if err != nil {
 		logger.LogError(c, "task protocol image render hook failed: "+err.Error())
 		respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")

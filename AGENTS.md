@@ -116,6 +116,18 @@ Inside `relaykit/`, use `kitutil.*` from `relaykit/relayconvert/kitutil/json.go`
 - Preserve explicit zero values in upstream relay request DTOs: absent client JSON fields must become `nil` and be omitted, while explicit `0`, `0.0`, or `false` values must remain non-`nil` and be sent upstream.
 - Avoid non-pointer scalars with `omitempty` for optional request parameters, because zero values will be silently dropped during marshal.
 
+**本 fork 的第三方供应商接入目标（用户已确认，长期约定）：**
+
+- 本项目会持续接入多个第三方中转供应商，其接口可能与 OpenAI 在路径、参数、参考素材输入、同步/异步行为、任务状态和响应结构上存在差异。鲸鱼 AI 是一个示例，不应将接入方案限定为该供应商或单个模型。
+- 下游统一使用 OpenAI 通用 endpoint、请求和响应格式；供应商格式差异由宿主及适配器/插件内部转换。供应商原生入口可作为补充，不能代替统一入口的完整链路。
+- 多个供应商渠道可提供同一个客户端模型 ID，由 New API 按配置的分组、优先级、权重和重试策略进行路由及故障转移。不得要求下游通过供应商前缀、专用模型 ID 或更换 endpoint 才能切换供应商；上游模型名称差异使用渠道模型映射处理。
+- 优先复用现有渠道路由、协议桥接、任务持久化、轮询和结算能力；供应商适配器/插件负责必要的格式转换。仅在宿主存在实际能力缺口时补充通用能力，后续供应商应复用该能力。
+- 适配逻辑应按供应商协议复用，保持多模型通用性。用户接受登记插件模型 ID、配置渠道模型列表及价格；以后沿用相同协议的新模型应尽量只更新声明与配置，不重复编写模型专用流程。
+- 保留上游可接受的未知扩展参数、嵌套对象、数组及显式零值/false，只转换必要字段，避免固定字段白名单无意丢弃新参数。透传不代表任意供应商都支持该参数，也不能绕过计费数量校验；供应商能力差异应明确处理，不伪造兼容性。
+- 故障转移必须贯穿最终响应：每次选中渠道后使用该渠道对应的适配器/插件，从原始客户端请求重新转换；最终结果校验、渲染及结算使用实际执行成功的供应商，不能继续使用首次选中的插件。针对跨供应商重试做最小必要回归验证，不能只验证各家独立调用成功。
+- 提交阶段按既有重试策略切换供应商；上游已接受并返回任务 ID 后的生成失败、轮询失败或超时，与提交重试分开处理。若需任务级改投，必须明确处理重复生成、多任务结果和费用结算，不能将其视为已由普通重试实现。
+- 后续用户提出接入类似供应商时，默认沿用以上目标，不再重复询问是否需要统一 OpenAI 格式、同模型路由、跨供应商故障转移或多模型复用。只询问尚未确定且实际影响结果的接口事实或新增范围。
+
 **JavaScript task plugins (mandatory):**
 
 - Before implementing, modifying, or reviewing JavaScript task plugins or their host API/runtime, MUST read [Task Plugin API v1](docs/plugin-api/v1.md), including its description writing and translation conventions. When changing the plugin contract, also check `docs/plugin-api/v1.schema.json` and `docs/plugin-api/v1.d.ts` for consistency.
