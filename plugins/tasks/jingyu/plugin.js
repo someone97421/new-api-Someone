@@ -5,7 +5,7 @@ export const meta = {
   key: "jingyu",
   name: "鲸鱼 AI",
   icon: "text:鲸鱼",
-  version: "1.0.0",
+  version: "1.1.0",
   author: { name: "new-api" },
   website: "https://jingyuapi.art",
   baseUrl: "https://jingyuapi.art",
@@ -15,6 +15,11 @@ export const meta = {
   fetchMode: "per_task",
   auth: { type: "api_key" },
   protocols: ["openai_image"],
+  upstreams: ["vendor", "new_api"],
+  routes: [
+    { method: "POST", path: "/jingyu/v1/image/generations", type: "submit", decode: "createImage", render: "imageCreated" },
+    { method: "GET", path: "/jingyu/v1/image/generations/:task_id", type: "query", render: "imageStatus" },
+  ],
   usageSchema: {
     image_count: {
       type: "number",
@@ -88,7 +93,7 @@ function validateSingleTask(req) {
   }
 }
 
-function normalizedRequest(ctx) {
+function decodeImageRequest(ctx, openAI) {
   let req;
   const body = ctx.body || {};
   if (body.kind === "json") {
@@ -112,7 +117,7 @@ function normalizedRequest(ctx) {
       } else req[key] = value;
     }
   } else throw new Error("JSON or multipart body required");
-  const model = text(ctx.model);
+  const model = text(ctx.model) || text(req.model);
   if (!model) throw new Error("model is required");
   if (!text(req.prompt)) throw new Error("prompt is required");
   validateSingleTask(req);
@@ -130,6 +135,9 @@ function normalizedRequest(ctx) {
     }
   }
   if (ctx.operation === "edit" && !references.length) throw new Error("image references are required for image editing");
+  req.model = model;
+  // 原生入口保留供应商字段及 async=false；OpenAI 入口负责同步等待转换。
+  if (!openAI) return { kind: "submit", model: model, action: references.length ? "image_to_image" : "text_to_image", requestBody: req };
   // 文档使用 image_urls；用户实际调用也验证了 images。统一转换到文档字段。
   delete req.images;
   delete req.image;
@@ -155,7 +163,7 @@ export function buildSubmitRequest(ctx) {
   validateSingleTask(body);
   body.model = ctx.upstreamModel || ctx.model;
   return {
-    url: ctx.baseUrl.replace(/\/+$/, "") + "/v1/image/generations",
+    url: ctx.baseUrl.replace(/\/+$/, "") + (ctx.upstream && ctx.upstream.kind === "new_api" ? "/jingyu" : "") + "/v1/image/generations",
     method: "POST",
     headers: { Authorization: "Bearer " + ctx.apiKey, "Content-Type": "application/json" },
     body: body,
@@ -176,7 +184,11 @@ export function parseSubmitResponse(ctx, response) {
 
 export function buildQueryRequest(ctx) {
   return {
-    url: ctx.baseUrl.replace(/\/+$/, "") + "/v1/image/generations/" + encodeURIComponent(ctx.taskId),
+    url:
+      ctx.baseUrl.replace(/\/+$/, "") +
+      (ctx.upstream && ctx.upstream.kind === "new_api" ? "/jingyu" : "") +
+      "/v1/image/generations/" +
+      encodeURIComponent(ctx.taskId),
     method: "GET",
     headers: { Authorization: "Bearer " + ctx.apiKey },
   };
@@ -226,9 +238,39 @@ export function extractUsageOnComplete(ctx, result, body) {
   return imageUsage(body);
 }
 
+export const native = {
+  createImage: function (ctx) {
+    return decodeImageRequest(ctx, false);
+  },
+  imageCreated: function (ctx, task) {
+    // 同步成功保持鲸鱼 ImageResponse；异步返回宿主管理的公开任务 ID。
+    if (task.status === "SUCCESS") return task.data;
+    const data = utils.json.clone(task.data || {});
+    data.id = task.task_id;
+    data.task_id = task.task_id;
+    data.status = task.status === "SUBMITTED" ? "queued" : task.status.toLowerCase();
+    if (data.created === undefined) data.created = task.created_at;
+    return data;
+  },
+  imageStatus: function (ctx, task) {
+    // 宿主超时/轮询失败可能已终止任务；不能继续回显旧上游快照的进行中状态。
+    const snapshot = task.data || {};
+    const payload = snapshot.data && typeof snapshot.data === "object" && !Array.isArray(snapshot.data) ? snapshot.data : snapshot;
+    const data = utils.json.clone(payload);
+    data.task_id = task.task_id;
+    data.status = task.status;
+    data.progress = task.progress || "0%";
+    if (task.fail_reason) data.fail_reason = task.fail_reason;
+    if (task.status === "SUCCESS" && !Array.isArray(data.results)) data.results = imageEntries(snapshot);
+    return { code: "success", message: "", data: data };
+  },
+};
+
 export const protocols = {
   openai_image: {
-    decodeRequest: normalizedRequest,
+    decodeRequest: function (ctx) {
+      return decodeImageRequest(ctx, true);
+    },
     render: function (ctx, task) {
       const data = imageEntries(task.data);
       if (!data.length) throw new Error("Jingyu returned no image output");

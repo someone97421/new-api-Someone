@@ -10,6 +10,7 @@ import (
 	builtinplugins "github.com/QuantumNous/new-api/plugins"
 	taskplugin "github.com/QuantumNous/new-api/relay/channel/task/jsplugin"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -110,11 +111,17 @@ func TestJingyuImageValidation(t *testing.T) {
 		{"stream", "stream", true, "stream is not supported"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			body := map[string]any{"prompt": "a cat", tc.field: tc.value}
-			_, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_image", "decodeRequest"}, map[string]any{
-				"model": "nano-banana-2", "operation": "generate", "body": map[string]any{"kind": "json", "value": body},
-			})
-			require.ErrorContains(t, err, tc.message)
+			body := map[string]any{"model": "nano-banana-2", "prompt": "a cat", tc.field: tc.value}
+			for _, path := range [][]string{{"openai_image", "decodeRequest"}, {"createImage"}} {
+				export := "protocols"
+				if len(path) == 1 {
+					export = "native"
+				}
+				_, err := plugin.Engine.CallPath(t.Context(), export, path, map[string]any{
+					"model": "nano-banana-2", "operation": "generate", "body": map[string]any{"kind": "json", "value": body},
+				})
+				require.ErrorContains(t, err, tc.message)
+			}
 		})
 	}
 }
@@ -171,4 +178,94 @@ func TestJingyuTaskLifecycle(t *testing.T) {
 	value, err = plugin.Engine.Call(t.Context(), "parseSubmitResponse", map[string]any{"publicTaskId": "public-id"}, map[string]any{"body": map[string]any{"data": []any{map[string]any{"url": url}}}})
 	require.NoError(t, err)
 	assert.Equal(t, "SUCCESS", jingyuObject(t, value)["immediate"].(map[string]any)["status"])
+}
+
+func TestJingyuNativeImageEndpoints(t *testing.T) {
+	plugin := newJingyuPlugin(t)
+	generation := jsplugin.DefaultRegistry.Generation()
+	submit, found := generation.LookupDeclaredRoute(http.MethodPost, "/jingyu/v1/image/generations")
+	require.True(t, found)
+	query, found := generation.LookupDeclaredRoute(http.MethodGet, "/jingyu/v1/image/generations/:task_id")
+	require.True(t, found)
+	assert.Equal(t, "jingyu", submit.Plugin.Meta.Key)
+	assert.Equal(t, "jingyu", query.Plugin.Meta.Key)
+	body := map[string]any{
+		"model": "nano-banana-2", "prompt": "a cat", "async": false, "response_format": "b64_json",
+		"aspect_ratio": "16:9", "image_size": "4K", "images": []any{"https://cdn.example/reference.png"},
+		"seed": 0, "watermark": false, "extra": map[string]any{"future": []any{0, false}},
+	}
+	value, err := plugin.Engine.CallPath(t.Context(), "native", []string{submit.Route.Decode}, map[string]any{
+		"body": map[string]any{"kind": "json", "value": body},
+	})
+	require.NoError(t, err)
+	intent := jingyuObject(t, value)
+	assert.Equal(t, "image_to_image", intent["action"])
+	assert.Equal(t, jingyuObject(t, body), intent["requestBody"], "native decoding must preserve the vendor format and explicit false")
+	for _, upstream := range []string{"vendor", "new_api"} {
+		t.Run(upstream, func(t *testing.T) {
+			ctx := map[string]any{
+				"baseUrl": "https://upstream.example", "apiKey": "test-key", "model": "nano-banana-2", "upstreamModel": "gpt-image-2.5-sunburst",
+				"upstream": map[string]any{"kind": upstream}, "requestBody": intent["requestBody"], "taskId": "public-task",
+			}
+			prefix := ""
+			if upstream == "new_api" {
+				prefix = "/jingyu"
+			}
+			value, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", ctx)
+			require.NoError(t, err)
+			descriptor := jingyuObject(t, value)
+			assert.Equal(t, "https://upstream.example"+prefix+"/v1/image/generations", descriptor["url"])
+			assert.Equal(t, "gpt-image-2.5-sunburst", descriptor["body"].(map[string]any)["model"])
+			assert.Equal(t, false, descriptor["body"].(map[string]any)["async"])
+			value, err = plugin.Engine.Call(t.Context(), "buildQueryRequest", ctx)
+			require.NoError(t, err)
+			assert.Equal(t, "https://upstream.example"+prefix+"/v1/image/generations/public-task", jingyuObject(t, value)["url"])
+		})
+	}
+
+	task := &model.Task{TaskID: "public-task", Platform: "jingyu", Status: model.TaskStatusSubmitted, Progress: "0%", CreatedAt: 123}
+	task.PrivateData.UpstreamTaskID = "private-vendor-task"
+	task.SetData(map[string]any{"id": "private-vendor-task", "task_id": "private-vendor-task", "status": "queued", "created": 123})
+	view, err := service.BuildTaskPluginView(task)
+	require.NoError(t, err)
+	value, err = plugin.Engine.CallPath(t.Context(), "native", []string{submit.Route.Render}, map[string]any{}, jingyuObject(t, view))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"id": "public-task", "task_id": "public-task", "status": "queued", "created": float64(123)}, jingyuObject(t, value))
+
+	for _, status := range []model.TaskStatus{model.TaskStatusSuccess, model.TaskStatusFailure} {
+		t.Run(string(status), func(t *testing.T) {
+			task.Status, task.Progress = status, "100%"
+			task.FailReason = ""
+			if status == model.TaskStatusFailure {
+				task.FailReason = "host polling timeout"
+			}
+			task.SetData(map[string]any{"code": "success", "data": map[string]any{
+				"task_id": "private-vendor-task", "status": "IN_PROGRESS", "progress": "1%",
+				"results": []any{map[string]any{"url": "https://cdn.example/result.png"}},
+			}})
+			view, err := service.BuildTaskPluginView(task)
+			require.NoError(t, err)
+			value, err := plugin.Engine.CallPath(t.Context(), "native", []string{query.Route.Render}, map[string]any{}, jingyuObject(t, view))
+			require.NoError(t, err)
+			response := jingyuObject(t, value)
+			data := response["data"].(map[string]any)
+			assert.Equal(t, "success", response["code"])
+			assert.Equal(t, "public-task", data["task_id"])
+			assert.Equal(t, string(status), data["status"], "host terminal status must override the stale upstream snapshot")
+			if status == model.TaskStatusFailure {
+				assert.Equal(t, task.FailReason, data["fail_reason"])
+			}
+		})
+	}
+
+	response := map[string]any{"created": 123, "data": []any{map[string]any{"b64_json": "QUFB"}}}
+	value, err = plugin.Engine.CallPath(t.Context(), "native", []string{submit.Route.Render}, map[string]any{}, map[string]any{"status": "SUCCESS", "data": response})
+	require.NoError(t, err)
+	assert.Equal(t, jingyuObject(t, response), jingyuObject(t, value), "synchronous native image output must keep its original envelope")
+	value, err = plugin.Engine.CallPath(t.Context(), "native", []string{query.Route.Render}, map[string]any{}, map[string]any{"task_id": "public-task", "status": "SUCCESS", "data": response})
+	require.NoError(t, err)
+	queryResponse := jingyuObject(t, value)
+	value, err = plugin.Engine.Call(t.Context(), "parseTaskResult", map[string]any{"taskId": "public-task"}, queryResponse)
+	require.NoError(t, err)
+	assert.Equal(t, "SUCCESS", jingyuObject(t, value)["status"], "a gateway upstream must accept native retrieval of an immediate result")
 }
