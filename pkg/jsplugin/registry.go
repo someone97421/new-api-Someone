@@ -379,6 +379,9 @@ func CompilePlugin(source string, options Options) (*LoadedPlugin, error) {
 		return nil, fmt.Errorf("plugin %s must export listArtifacts and buildContentRequest together", meta.Key)
 	}
 	for _, route := range meta.Routes {
+		if route.Type == RouteTypeContent && !artifactHooks["listArtifacts"] {
+			return nil, fmt.Errorf("plugin %s content route requires listArtifacts and buildContentRequest", meta.Key)
+		}
 		for kind, member := range map[string]string{"decode": route.Decode, "render": route.Render} {
 			if member == "" {
 				continue
@@ -1794,6 +1797,13 @@ func decodeRoutes(value any) ([]Route, error) {
 			return nil, err
 		}
 		route.Type = RouteType(routeType)
+		if route.Type == RouteTypeContent {
+			for _, field := range []string{"decode", "render", "action", "models", "retainResult"} {
+				if _, declared := object[field]; declared {
+					return nil, fmt.Errorf("content route %s %s must not declare %s", route.Method, route.Path, field)
+				}
+			}
+		}
 		if route.Action, err = stringMetaField(object, "action"); err != nil {
 			return nil, err
 		}

@@ -21,6 +21,7 @@ const (
 	RouteTypeSubmit  RouteType = "submit"
 	RouteTypeQuery   RouteType = "query"
 	RouteTypeDynamic RouteType = "dynamic"
+	RouteTypeContent RouteType = "content"
 )
 
 type Route struct {
@@ -389,7 +390,7 @@ type RoutingGeneration struct {
 }
 
 var (
-	routeMethodPattern = regexp.MustCompile(`^(GET|POST|PUT|PATCH|DELETE)$`)
+	routeMethodPattern = regexp.MustCompile(`^(GET|HEAD|POST|PUT|PATCH|DELETE)$`)
 	pathNamePattern    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	staticSegment      = regexp.MustCompile(`^[A-Za-z0-9._~-]+$`)
 	memberNamePattern  = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
@@ -756,24 +757,31 @@ func validateRoute(route *Route) error {
 		if route.Decode == "" || route.Render == "" || route.TaskIDParam != "" {
 			return fmt.Errorf("submit route %s %s must declare decode and render and must not declare taskIdParam", route.Method, route.Path)
 		}
-	case RouteTypeQuery:
-		if route.Decode != "" || strings.TrimSpace(route.Render) == "" {
+	case RouteTypeQuery, RouteTypeContent:
+		if route.Type == RouteTypeContent {
+			if route.Method != http.MethodGet && route.Method != http.MethodHead {
+				return fmt.Errorf("content route %s %s must use GET or HEAD", route.Method, route.Path)
+			}
+			if route.Decode != "" || route.Render != "" {
+				return fmt.Errorf("content route %s %s must not declare decode or render", route.Method, route.Path)
+			}
+		} else if route.Decode != "" || strings.TrimSpace(route.Render) == "" {
 			return fmt.Errorf("query route %s %s must declare render and must not declare decode", route.Method, route.Path)
 		}
 		if route.Action != "" {
-			return fmt.Errorf("query route %s %s must not declare action", route.Method, route.Path)
+			return fmt.Errorf("%s route %s %s must not declare action", route.Type, route.Method, route.Path)
 		}
 		if route.RetainResult != nil {
-			return fmt.Errorf("query route %s %s must not declare retainResult", route.Method, route.Path)
+			return fmt.Errorf("%s route %s %s must not declare retainResult", route.Type, route.Method, route.Path)
 		}
 		if route.TaskIDParam == "" {
 			route.TaskIDParam = "task_id"
 		}
 		if !pathNamePattern.MatchString(route.TaskIDParam) {
-			return fmt.Errorf("query route %s %s has invalid taskIdParam %q", route.Method, route.Path, route.TaskIDParam)
+			return fmt.Errorf("%s route %s %s has invalid taskIdParam %q", route.Type, route.Method, route.Path, route.TaskIDParam)
 		}
 		if !pathHasParameter(route.Path, route.TaskIDParam) {
-			return fmt.Errorf("query route %s %s must contain :%s", route.Method, route.Path, route.TaskIDParam)
+			return fmt.Errorf("%s route %s %s must contain :%s", route.Type, route.Method, route.Path, route.TaskIDParam)
 		}
 	case RouteTypeDynamic:
 		if route.Decode == "" || route.Render == "" || route.TaskIDParam != "" {
@@ -781,6 +789,9 @@ func validateRoute(route *Route) error {
 		}
 	default:
 		return fmt.Errorf("plugin route %s %s has unsupported type %q", route.Method, route.Path, route.Type)
+	}
+	if route.Method == http.MethodHead && route.Type != RouteTypeContent {
+		return fmt.Errorf("plugin route HEAD %s must use content type", route.Path)
 	}
 	if route.Decode != "" && !memberNamePattern.MatchString(route.Decode) {
 		return fmt.Errorf("plugin route %s %s has invalid decode %q", route.Method, route.Path, route.Decode)
@@ -792,8 +803,8 @@ func validateRoute(route *Route) error {
 		return fmt.Errorf("plugin route %s %s action must not have surrounding whitespace", route.Method, route.Path)
 	}
 	if len(route.Models) > 0 {
-		if route.Type == RouteTypeQuery {
-			return fmt.Errorf("query route %s %s must not declare models", route.Method, route.Path)
+		if route.Type == RouteTypeQuery || route.Type == RouteTypeContent {
+			return fmt.Errorf("%s route %s %s must not declare models", route.Type, route.Method, route.Path)
 		}
 		if err := validateModelScope(route.Models, fmt.Sprintf("route %s %s", route.Method, route.Path)); err != nil {
 			return err

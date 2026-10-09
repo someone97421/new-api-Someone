@@ -35,7 +35,7 @@ func jingyuObject(t *testing.T, value any) map[string]any {
 
 func TestJingyuImageProtocol(t *testing.T) {
 	plugin := newJingyuPlugin(t)
-	for _, name := range plugin.Meta.Models {
+	for _, name := range plugin.Meta.Protocols[0].Models {
 		for _, path := range []string{"/v1/images/generations", "/v1/images/edits"} {
 			bindings := jsplugin.DefaultRegistry.Generation().LookupEndpointCandidates(http.MethodPost, path, name)
 			assert.NotEmpty(t, bindings, name)
@@ -268,4 +268,154 @@ func TestJingyuNativeImageEndpoints(t *testing.T) {
 	value, err = plugin.Engine.Call(t.Context(), "parseTaskResult", map[string]any{"taskId": "public-task"}, queryResponse)
 	require.NoError(t, err)
 	assert.Equal(t, "SUCCESS", jingyuObject(t, value)["status"], "a gateway upstream must accept native retrieval of an immediate result")
+}
+
+func TestJingyuVideoProtocol(t *testing.T) {
+	plugin := newJingyuPlugin(t)
+	for _, name := range plugin.Meta.Protocols[1].Models {
+		assert.NotEmpty(t, jsplugin.DefaultRegistry.Generation().LookupEndpointCandidates(http.MethodPost, "/v1/videos", name), name)
+	}
+	body := map[string]any{"model": "client-alias", "prompt": "a cat", "seconds": "5", "size": "1280x720", "input_reference": "https://cdn.example/cat.png", "seed": 0, "generate_audio": false, "extra": map[string]any{"doubao": map[string]any{"watermark": false}, "future": []any{0, false}}}
+	before, err := common.Marshal(body)
+	require.NoError(t, err)
+	value, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{"model": "client-alias", "upstreamModel": "doubao-seedance-2-0-260128", "body": map[string]any{"kind": "json", "value": body}})
+	require.NoError(t, err)
+	intent := jingyuObject(t, value)
+	assert.Equal(t, "image_to_video", intent["action"])
+	request := intent["requestBody"].(map[string]any)
+	ctx := map[string]any{"baseUrl": "https://upstream.example/", "apiKey": "test-key", "model": "client-alias", "upstreamModel": "doubao-seedance-2-0-260128", "action": intent["action"], "requestBody": request}
+	value, err = plugin.Engine.Call(t.Context(), "buildSubmitRequest", ctx)
+	require.NoError(t, err)
+	descriptor := jingyuObject(t, value)
+	assert.Equal(t, "https://upstream.example/v1/video/generations", descriptor["url"])
+	payload := descriptor["body"].(map[string]any)
+	assert.Equal(t, "doubao-seedance-2-0-260128", payload["model"])
+	assert.Equal(t, float64(5), payload["duration"])
+	assert.Equal(t, "16:9", payload["aspect_ratio"])
+	assert.Equal(t, "720p", payload["resolution"])
+	assert.Equal(t, false, payload["generate_audio"])
+	assert.Equal(t, float64(0), payload["seed"])
+	assert.Equal(t, jingyuObject(t, body)["extra"], payload["extra"])
+	assert.Equal(t, []any{map[string]any{"type": "image", "role": "first_frame", "url": body["input_reference"]}}, payload["references"])
+	assert.NotContains(t, payload, "seconds")
+	assert.NotContains(t, payload, "input_reference")
+	after, err := common.Marshal(body)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(before), string(after), "retry conversion must preserve the original request")
+	value, err = plugin.Engine.Call(t.Context(), "extractUsage", ctx)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"video_count": float64(1), "seconds": float64(5), "resolution": "720p", "audio": "disabled"}, jingyuObject(t, value))
+	ctx["usagePurpose"] = "billing_ratios"
+	value, err = plugin.Engine.Call(t.Context(), "extractUsage", ctx)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"seconds": float64(5)}, jingyuObject(t, value))
+}
+
+func TestJingyuVideoUploadsAndNative(t *testing.T) {
+	plugin := newJingyuPlugin(t)
+	for _, native := range []bool{false, true} {
+		t.Run(map[bool]string{false: "OpenAI", true: "native"}[native], func(t *testing.T) {
+			fields := map[string]any{"prompt": []string{"a cat"}, "seconds": []string{"5"}, "generate_audio": []string{"false"}}
+			fileField, export, path := "input_reference", "protocols", []string{"openai_video", "decodeRequest"}
+			if native {
+				fields = map[string]any{"request": []string{`{"model":"starvideos_o3","prompt":"a cat","duration":5,"references":[{"type":"image","role":"reference_image","file_key":"photo"}],"extra":{"future":[0,false]}}`}}
+				fileField, export, path = "photo", "native", []string{"createVideo"}
+			}
+			value, err := plugin.Engine.CallPath(t.Context(), export, path, map[string]any{"model": "starvideos_o3", "body": map[string]any{"kind": "multipart", "fields": fields, "files": []any{map[string]any{"field": fileField, "ref": "request_file:" + fileField, "filename": "cat.png"}}}})
+			require.NoError(t, err)
+			intent := jingyuObject(t, value)
+			ctx := map[string]any{"model": "starvideos_o3", "action": intent["action"], "baseUrl": "https://upstream.example", "apiKey": "test-key", "upstream": map[string]any{"kind": "new_api"}, "requestBody": intent["requestBody"]}
+			value, err = plugin.Engine.Call(t.Context(), "buildSubmitRequest", ctx)
+			require.NoError(t, err)
+			descriptor := jingyuObject(t, value)
+			assert.Equal(t, "https://upstream.example/jingyu/v1/video/generations", descriptor["url"])
+			assert.Equal(t, "multipart", descriptor["bodyType"])
+			parts := descriptor["parts"].([]any)
+			var payload map[string]any
+			require.NoError(t, common.UnmarshalJsonStr(parts[0].(map[string]any)["value"].(string), &payload))
+			assert.Equal(t, "reference_image", payload["references"].([]any)[0].(map[string]any)["role"])
+			assert.Equal(t, "request_file:"+fileField, parts[1].(map[string]any)["fileRef"])
+		})
+	}
+}
+
+func TestJingyuVideoValidation(t *testing.T) {
+	plugin := newJingyuPlugin(t)
+	for _, tc := range []struct {
+		name, field string
+		value       any
+		message     string
+	}{
+		{"zero", "duration", 0, "integer between"}, {"overflow", "duration", 1e30, "integer between"}, {"fraction", "duration", 1.5, "integer between"},
+		{"batch", "task_count", 2, "must be 1"}, {"audio type", "generate_audio", 0, "boolean"}, {"bad reference", "references", []any{map[string]any{"type": "image", "role": "first_frame", "url": "data:image/png;base64,abc"}}, "HTTP(S)"},
+		{"unbound file", "references", []any{map[string]any{"type": "image", "role": "first_frame", "file_key": "missing"}}, "uploaded file"},
+		{"legacy media", "video_url", "https://cdn.example/a.mp4", "not supported"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, native := range []bool{false, true} {
+				export, path := "protocols", []string{"openai_video", "decodeRequest"}
+				if native {
+					export, path = "native", []string{"createVideo"}
+				}
+				_, err := plugin.Engine.CallPath(t.Context(), export, path, map[string]any{"model": "doubao-seedance-2-0-260128", "body": map[string]any{"kind": "json", "value": map[string]any{"prompt": "a cat", "duration": 5, tc.field: tc.value}}})
+				require.ErrorContains(t, err, tc.message)
+			}
+		})
+	}
+}
+
+func TestJingyuVideoLifecycleAndContent(t *testing.T) {
+	plugin := newJingyuPlugin(t)
+	ctx := map[string]any{"model": "doubao-seedance-2-0-260128", "action": "text_to_video", "taskId": "vendor-id", "baseUrl": "https://upstream.example", "apiKey": "test-key"}
+	for _, tc := range []struct{ vendor, host string }{{"queued", "QUEUED"}, {"processing", "IN_PROGRESS"}, {"succeeded", "SUCCESS"}, {"failed", "FAILURE"}, {"new_state", "UNKNOWN"}} {
+		value, err := plugin.Engine.Call(t.Context(), "parseTaskResult", ctx, map[string]any{"task_id": "vendor-id", "status": tc.vendor, "progress": 45})
+		require.NoError(t, err)
+		assert.Equal(t, tc.host, jingyuObject(t, value)["status"])
+	}
+	body := map[string]any{"task_id": "vendor-id", "status": "succeeded", "duration": 6, "resolution": "1080p", "generate_audio": false}
+	value, err := plugin.Engine.Call(t.Context(), "extractUsageOnComplete", ctx, map[string]any{"status": "SUCCESS"}, body)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"video_count": float64(1), "seconds": float64(6), "resolution": "1080p", "audio": "disabled"}, jingyuObject(t, value))
+	body["duration"] = 1e30
+	value, err = plugin.Engine.Call(t.Context(), "extractUsageOnComplete", ctx, map[string]any{"status": "SUCCESS"}, body)
+	require.NoError(t, err)
+	assert.NotContains(t, jingyuObject(t, value), "seconds", "invalid upstream duration must preserve reserved usage")
+	value, err = plugin.Engine.Call(t.Context(), "buildQueryRequest", ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "https://upstream.example/v1/video/generations/vendor-id", jingyuObject(t, value)["url"])
+	task := &model.Task{TaskID: "public-id", Platform: "jingyu", Action: "text_to_video", Status: model.TaskStatusSuccess, Progress: "100%", CreatedAt: 123, Properties: model.Properties{OriginModelName: "doubao-seedance-2-0-260128"}}
+	task.PrivateData.UpstreamTaskID = "vendor-id"
+	task.SetData(map[string]any{"task_id": "vendor-id", "status": "processing", "duration": 5, "resolution": "720p", "aspect_ratio": "16:9"})
+	view, err := service.BuildTaskPluginView(task)
+	require.NoError(t, err)
+	value, err = plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "render"}, map[string]any{}, jingyuObject(t, view))
+	require.NoError(t, err)
+	assert.Equal(t, "public-id", jingyuObject(t, value)["task_id"])
+	assert.Equal(t, "5", jingyuObject(t, value)["seconds"])
+	assert.Equal(t, "1280x720", jingyuObject(t, value)["size"])
+	adaptor := taskplugin.New(plugin)
+	artifacts, err := adaptor.ListArtifacts(task)
+	require.NoError(t, err)
+	assert.Len(t, artifacts, 1, "completed tasks without a public URL must still provide content")
+	videoJSON, err := adaptor.ConvertToOpenAIVideo(task)
+	require.NoError(t, err)
+	var video map[string]any
+	require.NoError(t, common.Unmarshal(videoJSON, &video))
+	assert.Equal(t, "public-id", video["id"])
+	assert.Equal(t, "video", video["object"])
+	assert.Equal(t, "completed", video["status"])
+	assert.NotContains(t, video, "task_id")
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		ctx["artifactKey"], ctx["upstreamTaskId"] = "video", "vendor-id"
+		ctx["clientRequest"] = map[string]any{"method": method, "headers": map[string]any{"Range": "bytes=0-99", "If-None-Match": "etag"}}
+		value, err := plugin.Engine.Call(t.Context(), "buildContentRequest", ctx)
+		require.NoError(t, err)
+		descriptor := jingyuObject(t, value)
+		assert.Equal(t, "https://upstream.example/v1/video/generations/vendor-id/content", descriptor["url"])
+		assert.Equal(t, method, descriptor["method"])
+		assert.Equal(t, map[string]any{"Authorization": "Bearer test-key", "Range": "bytes=0-99", "If-None-Match": "etag"}, descriptor["headers"])
+		binding, found := jsplugin.DefaultRegistry.Generation().LookupDeclaredRoute(method, "/jingyu/v1/video/generations/:task_id/content")
+		require.True(t, found)
+		assert.Equal(t, jsplugin.RouteTypeContent, binding.Route.Type)
+	}
 }

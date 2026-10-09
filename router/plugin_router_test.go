@@ -17,6 +17,8 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -780,6 +782,126 @@ func TestProductionPluginNativeQueryTraversesInnerRouter(t *testing.T) {
 	assert.NotContains(t, recorder.Body.String(), "secret.example")
 }
 
+func TestPluginContentRouteContract(t *testing.T) {
+	for _, tc := range []struct {
+		name, route, hooks, wantError string
+	}{
+		{name: "GET", route: `{method:"GET",path:"/vendor/:task_id/content",type:"content"}`},
+		{name: "HEAD custom parameter", route: `{method:"HEAD",path:"/vendor/:id/content",type:"content",taskIdParam:"id"}`},
+		{name: "POST rejected", route: `{method:"POST",path:"/vendor/:task_id/content",type:"content"}`, wantError: "must use GET or HEAD"},
+		{name: "missing parameter", route: `{method:"GET",path:"/vendor/content",type:"content"}`, wantError: "must contain :task_id"},
+		{name: "decoder rejected", route: `{method:"GET",path:"/vendor/:task_id/content",type:"content",decode:""}`, wantError: "must not declare decode"},
+		{name: "renderer rejected", route: `{method:"GET",path:"/vendor/:task_id/content",type:"content",render:"render"}`, wantError: "must not declare render"},
+		{name: "models rejected", route: `{method:"GET",path:"/vendor/:task_id/content",type:"content",models:["model"]}`, wantError: "must not declare models"},
+		{name: "retention rejected", route: `{method:"GET",path:"/vendor/:task_id/content",type:"content",retainResult:true}`, wantError: "must not declare retainResult"},
+		{name: "missing hooks", route: `{method:"GET",path:"/vendor/:task_id/content",type:"content"}`, hooks: "missing", wantError: "content route requires listArtifacts and buildContentRequest"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := routerPluginSource("content-contract", "1.0.0", "["+tc.route+"]")
+			if tc.hooks != "missing" {
+				source += `export function listArtifacts() { return []; }
+export function buildContentRequest() { return {}; }`
+			}
+			plugin, err := jsplugin.CompilePlugin(source, jsplugin.Options{})
+			if tc.wantError != "" {
+				require.ErrorContains(t, err, tc.wantError)
+				return
+			}
+			require.NoError(t, err)
+			if tc.name == "GET" {
+				assert.Equal(t, "task_id", plugin.Meta.Routes[0].TaskIDParam)
+			}
+		})
+	}
+}
+
+func TestProductionPluginContentRoute(t *testing.T) {
+	previousDB, previousRegistry, previousMemoryCache := model.DB, jsplugin.DefaultRegistry, common.MemoryCacheEnabled
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(&model.Task{}, &model.Channel{}))
+	model.DB, common.MemoryCacheEnabled = database, false
+	t.Cleanup(func() {
+		model.DB, jsplugin.DefaultRegistry, common.MemoryCacheEnabled = previousDB, previousRegistry, previousMemoryCache
+	})
+	originalFetchSetting := *system_setting.GetFetchSetting()
+	system_setting.GetFetchSetting().EnableSSRFProtection = true
+	system_setting.GetFetchSetting().AllowPrivateIp = true
+	system_setting.GetFetchSetting().AllowedPorts = []string{"1-65535"}
+	t.Cleanup(func() { *system_setting.GetFetchSetting() = originalFetchSetting })
+	service.InitHttpClient()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/content/output", r.URL.Path)
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("Content-Length", "4")
+		if r.Method != http.MethodHead {
+			_, _ = w.Write([]byte("data"))
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	baseURL := upstream.URL
+	require.NoError(t, database.Create(&model.Channel{Id: 17, Type: constant.ChannelTypeTaskPlugin, Key: "test-channel-key", BaseURL: &baseURL}).Error)
+	source := routerPluginSource("content-owner", "1.0.0", `[
+		{method:"GET",path:"/vendor/videos/:task_id/content",type:"content"},
+		{method:"HEAD",path:"/vendor/videos/:task_id/content",type:"content"},
+		{method:"GET",path:"/vendor/custom/:id/content",type:"content",taskIdParam:"id"}
+	]`) + `
+export function listArtifacts() { return [{key:"output",type:"video",mimeType:"video/mp4"}]; }
+export function buildContentRequest(ctx) {
+  if (ctx.artifactKey !== "output") throw new Error("Unexpected artifact");
+  return {url:ctx.baseUrl+"/content/"+ctx.artifactKey,method:ctx.clientRequest.method};
+}`
+	plugin, err := jsplugin.CompilePlugin(source, jsplugin.Options{})
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		id, platform string
+		userID       int
+		status       model.TaskStatus
+	}{
+		{"owned", "content-owner", 91, model.TaskStatusSuccess},
+		{"foreign", "content-owner", 92, model.TaskStatusSuccess},
+		{"wrong-plugin", "another-plugin", 91, model.TaskStatusSuccess},
+		{"pending", "content-owner", 91, model.TaskStatusInProgress},
+	} {
+		require.NoError(t, database.Create(&model.Task{TaskID: tc.id, Platform: constant.TaskPlatform(tc.platform), UserId: tc.userID, ChannelId: 17, Status: tc.status,
+			PrivateData: model.TaskPrivateData{Execution: &model.TaskExecutionSnapshot{TaskPlugin: &model.TaskPluginSnapshot{Key: tc.platform}}},
+		}).Error)
+	}
+	handlers := func(generation *jsplugin.RoutingGeneration, binding jsplugin.RouteBinding) []gin.HandlerFunc {
+		production := productionPluginRouteHandlers(generation, binding)
+		return []gin.HandlerFunc{production[0], func(c *gin.Context) { c.Set("id", 91); c.Set("token_id", 1); c.Next() }, production[len(production)-1]}
+	}
+	outer, registry := newPluginRouterTest(t, []*jsplugin.LoadedPlugin{plugin}, handlers)
+	jsplugin.DefaultRegistry = registry
+	outer.NoRoute((&pluginRouteDispatcher{registry: registry}).dispatch)
+	for _, tc := range []struct {
+		method, path, body string
+		status             int
+	}{
+		{http.MethodGet, "/vendor/videos/owned/content", "data", http.StatusOK},
+		{http.MethodHead, "/vendor/videos/owned/content", "", http.StatusOK},
+		{http.MethodGet, "/vendor/custom/owned/content", "data", http.StatusOK},
+		{http.MethodGet, "/vendor/videos/foreign/content", "", http.StatusNotFound},
+		{http.MethodGet, "/vendor/videos/wrong-plugin/content", "", http.StatusNotFound},
+		{http.MethodGet, "/vendor/videos/missing/content", "", http.StatusNotFound},
+		{http.MethodGet, "/vendor/videos/pending/content", "", http.StatusBadRequest},
+	} {
+		t.Run(tc.method+tc.path, func(t *testing.T) {
+			response := performPluginRequest(outer, tc.method, tc.path)
+			require.Equal(t, tc.status, response.Code, response.Body.String())
+			if tc.status == http.StatusOK {
+				assert.Equal(t, tc.body, response.Body.String())
+				assert.Equal(t, "video/mp4", response.Header().Get("Content-Type"))
+				assert.Equal(t, "4", response.Header().Get("Content-Length"))
+			}
+		})
+	}
+	authOuter, authRegistry := newPluginRouterTest(t, []*jsplugin.LoadedPlugin{plugin}, productionPluginRouteHandlers)
+	authOuter.NoRoute((&pluginRouteDispatcher{registry: authRegistry}).dispatch)
+	response := performPluginRequest(authOuter, http.MethodGet, "/vendor/videos/owned/content")
+	assert.Equal(t, http.StatusUnauthorized, response.Code)
+}
+
 func newPluginRouterTest(
 	t *testing.T,
 	plugins []*jsplugin.LoadedPlugin,
@@ -861,6 +983,7 @@ export const meta = {
 	fetchMode: "per_task",
 	routes: (%s).map(function(route) {
 		const migrated = Object.assign({}, route);
+		if (route.type === "content") return migrated;
 		delete migrated.renderer;
 		migrated.render = route.render || route.renderer || "render";
 		if (route.type !== "query") migrated.decode = route.decode || "decode";

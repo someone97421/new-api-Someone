@@ -114,6 +114,10 @@ func productionPluginRouteHandlers(generation *jsplugin.RoutingGeneration, bindi
 			c.Writer.Status(),
 		)
 	}
+	if binding.Route.Type == jsplugin.RouteTypeContent {
+		return []gin.HandlerFunc{pinRoute, middleware.TokenAuth(), controller.PluginVideoContent}
+	}
+
 	return []gin.HandlerFunc{
 		pinRoute,
 		middleware.TokenAuth(),

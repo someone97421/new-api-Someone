@@ -177,7 +177,7 @@ export function parseTaskResult() { return {status: "SUCCESS"}; }
 	})
 }
 
-func TestPrepareTaskPluginNativeRouteRejectsMultipartBeforeDecoder(t *testing.T) {
+func TestPrepareTaskPluginNativeRouteAcceptsMultipart(t *testing.T) {
 	plugin := compileTaskRoutePlugin(t, `
 export const meta = {
   apiVersion: 1, key: "route-multipart-test", name: "Multipart", version: "1.0.0",
@@ -185,7 +185,10 @@ export const meta = {
   models: ["multipart-model"], fetchMode: "per_task",
   routes: [{method: "POST", path: "/vendor/uploads", type: "submit", decode: "decodeUpload", render: "created"}],
 };
-export const native = {decodeUpload: function() { throw new Error("decoder must not run"); }, created: function(ctx, task) { return task; }};
+export const native = {decodeUpload: function(ctx) {
+  if (ctx.body.kind !== "multipart" || ctx.body.fields.caption[0] !== "hello" || ctx.body.fields.tag.length !== 2 || ctx.body.files[0].field !== "media") throw new Error("invalid multipart context");
+  return {kind: "submit", model: "multipart-model", requestBody: {fileRef: ctx.body.files[0].ref}};
+}, created: function(ctx, task) { return task; }};
 export function buildSubmitRequest() { return {url: "https://example.com"}; }
 export function parseSubmitResponse() { return {taskId: "one"}; }
 export function buildQueryRequest() { return {url: "https://example.com"}; }
@@ -212,7 +215,7 @@ export function parseTaskResult() { return {status: "SUCCESS"}; }
 
 	router.ServeHTTP(recorder, request)
 
-	assert.Equal(t, http.StatusUnsupportedMediaType, recorder.Code)
+	assert.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
 }
 
 func TestPrepareTaskPluginRouteModelScope(t *testing.T) {

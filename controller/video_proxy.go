@@ -18,6 +18,8 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/jsplugin"
+	"github.com/QuantumNous/new-api/relay"
 	relaychannel "github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/system_setting"
@@ -60,7 +62,21 @@ func videoProxyError(c *gin.Context, status int, errType, message string) {
 }
 
 func VideoProxy(c *gin.Context) {
-	taskID := c.Param("task_id")
+	videoProxy(c, c.Param("task_id"), nil)
+}
+
+// PluginVideoContent serves a native content route through the same media proxy.
+func PluginVideoContent(c *gin.Context) {
+	value, _ := c.Get(jsplugin.ContextKeyPinnedRoute)
+	pinned, ok := value.(jsplugin.PinnedRoute)
+	if !ok || pinned.Plugin == nil || pinned.Generation == nil || pinned.Route.Type != jsplugin.RouteTypeContent {
+		videoProxyError(c, http.StatusInternalServerError, "server_error", "Content route is unavailable")
+		return
+	}
+	videoProxy(c, c.Param(pinned.Route.TaskIDParam), &pinned)
+}
+
+func videoProxy(c *gin.Context, taskID string, pinned *jsplugin.PinnedRoute) {
 	if taskID == "" {
 		videoProxyError(c, http.StatusBadRequest, "invalid_request_error", "task_id is required")
 		return
@@ -76,6 +92,18 @@ func VideoProxy(c *gin.Context) {
 		videoProxyError(c, http.StatusNotFound, "invalid_request_error", "Task not found")
 		return
 	}
+	if pinned != nil {
+		plugin, matches := relay.ResolveTaskPluginForPlatform(pinned.Generation, task.Platform)
+		if channelType, parseErr := strconv.Atoi(string(task.Platform)); parseErr == nil {
+			plugin, matches = pinned.Generation.GetByChannelType(channelType)
+		}
+		if !matches || plugin.Meta.Key != pinned.Plugin.Meta.Key ||
+			(taskHasPluginExecution(task) && task.PrivateData.Execution.TaskPlugin.Key != pinned.Plugin.Meta.Key) {
+			videoProxyError(c, http.StatusNotFound, "invalid_request_error", "Task not found")
+			return
+		}
+	}
+
 	if task.Status != model.TaskStatusSuccess {
 		videoProxyError(c, http.StatusBadRequest, "invalid_request_error",
 			fmt.Sprintf("Task is not completed yet, current status: %s", task.Status))
