@@ -71,24 +71,27 @@ function renderRelay(value = '') {
   )
 }
 
-test('Missing configuration shows disabled defaults and enabling unlocks settings', async () => {
+test('Missing configuration keeps both switches off and global storage settings editable', async () => {
   renderRelay()
   const toggle = await screen.findByRole('switch', {
-    name: 'Enable file relay',
+    name: 'Enable direct file uploads',
   })
   expect(toggle).toHaveAttribute('aria-checked', 'false')
   expect(screen.getByLabelText('Storage directory')).toHaveValue(
     './data/file-relay'
   )
-  expect(screen.getByLabelText('Storage directory')).toBeDisabled()
+  expect(screen.getByLabelText('Storage directory')).toBeEnabled()
   expect(
-    screen.getByRole('switch', { name: 'Require local hosting' })
-  ).toHaveAttribute('aria-disabled', 'true')
+    screen.getByRole('switch', { name: 'Automatic file relay by default' })
+  ).toHaveAttribute('aria-checked', 'false')
+  expect(
+    screen.getByRole('switch', { name: 'Require local hosting by default' })
+  ).not.toHaveAttribute('aria-disabled', 'true')
   expect(screen.getByRole('button', { name: 'Save Changes' })).toBeDisabled()
   await userEvent.click(toggle)
   expect(screen.getByLabelText('Storage directory')).toBeEnabled()
   expect(
-    screen.getByRole('switch', { name: 'Require local hosting' })
+    screen.getByRole('switch', { name: 'Require local hosting by default' })
   ).not.toHaveAttribute('aria-disabled', 'true')
 })
 
@@ -110,7 +113,7 @@ test('Saving sends one JSON option, preserves zero values and omits server-manag
   await userEvent.clear(retries)
   await userEvent.type(retries, '0')
   await userEvent.click(
-    screen.getByRole('switch', { name: 'Require local hosting' })
+    screen.getByRole('switch', { name: 'Require local hosting by default' })
   )
   await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
   await waitFor(() =>
@@ -207,7 +210,7 @@ test('Pending save disables controls until the response arrives', async () => {
   )
   renderRelay()
   const toggle = await screen.findByRole('switch', {
-    name: 'Enable file relay',
+    name: 'Enable direct file uploads',
   })
   await userEvent.click(toggle)
   await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
@@ -216,6 +219,9 @@ test('Pending save disables controls until the response arrives', async () => {
   ).toBeDisabled()
   expect(toggle).toHaveAttribute('aria-disabled', 'true')
   expect(screen.getByLabelText('Storage directory')).toBeDisabled()
+  expect(
+    screen.getByRole('switch', { name: 'Automatic file relay by default' })
+  ).toHaveAttribute('aria-disabled', 'true')
   complete({ data: { success: true } })
   await waitFor(() =>
     expect(toggle).not.toHaveAttribute('aria-disabled', 'true')
@@ -239,7 +245,7 @@ test('Out-of-range retries show a field error and do not submit', async () => {
 test('Reset restores saved values after a keyboard toggle', async () => {
   renderRelay()
   const toggle = await screen.findByRole('switch', {
-    name: 'Enable file relay',
+    name: 'Enable direct file uploads',
   })
   toggle.focus()
   await userEvent.keyboard(' ')
@@ -259,4 +265,80 @@ test('Maximum numeric values and a public URL with a port and path are accepted'
     public_url: 'https://example.com:8443/media',
   }
   expect(createFileRelaySchema((text) => text).parse(values)).toEqual(values)
+})
+
+test.each([true, false])(
+  'Legacy enabled=%s initializes the automatic default and saves it independently',
+  async (enabled) => {
+    const update = vi
+      .spyOn(api, 'put')
+      .mockResolvedValue({ data: { success: true } })
+    const legacy = { ...fileRelayDefaults, enabled }
+    const { auto_relay_enabled: _automatic, ...saved } = legacy
+    renderRelay(JSON.stringify(saved))
+    const automatic = await screen.findByRole('switch', {
+      name: 'Automatic file relay by default',
+    })
+    expect(automatic).toHaveAttribute('aria-checked', String(enabled))
+    await userEvent.click(automatic)
+    expect(
+      screen.getByRole('switch', { name: 'Enable direct file uploads' })
+    ).toHaveAttribute('aria-checked', String(enabled))
+    await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+    await waitFor(() => expect(update).toHaveBeenCalled())
+    const payload = update.mock.calls[0]?.[1] as { value: string }
+    expect(JSON.parse(payload.value)).toMatchObject({
+      enabled,
+      auto_relay_enabled: !enabled,
+    })
+  }
+)
+
+test('Explicit automatic false overrides legacy enabled true and reset restores both settings', async () => {
+  renderRelay(
+    JSON.stringify({
+      ...fileRelayDefaults,
+      enabled: true,
+      auto_relay_enabled: false,
+    })
+  )
+  const automatic = await screen.findByRole('switch', {
+    name: 'Automatic file relay by default',
+  })
+  expect(automatic).toHaveAttribute('aria-checked', 'false')
+  automatic.focus()
+  await userEvent.keyboard(' ')
+  expect(automatic).toHaveAttribute('aria-checked', 'true')
+  await userEvent.click(screen.getByRole('button', { name: 'Reset' }))
+  expect(automatic).toHaveAttribute('aria-checked', 'false')
+  expect(
+    screen.getByRole('switch', { name: 'Enable direct file uploads' })
+  ).toHaveAttribute('aria-checked', 'true')
+})
+
+test('Automatic relay stays enabled when direct uploads are switched off and saved', async () => {
+  const update = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  renderRelay(
+    JSON.stringify({
+      ...fileRelayDefaults,
+      enabled: true,
+      auto_relay_enabled: true,
+    })
+  )
+  const upload = await screen.findByRole('switch', {
+    name: 'Enable direct file uploads',
+  })
+  await userEvent.click(upload)
+  expect(
+    screen.getByRole('switch', { name: 'Automatic file relay by default' })
+  ).toHaveAttribute('aria-checked', 'true')
+  await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+  await waitFor(() => expect(update).toHaveBeenCalled())
+  const payload = update.mock.calls[0]?.[1] as { value: string }
+  expect(JSON.parse(payload.value)).toMatchObject({
+    enabled: false,
+    auto_relay_enabled: true,
+  })
 })

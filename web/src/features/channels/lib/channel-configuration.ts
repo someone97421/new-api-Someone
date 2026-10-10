@@ -84,6 +84,8 @@ const CONFIGURATION_BLOCKS = {
       'proxy',
       'http_protocol',
       'http2_connection_shards',
+      'file_relay_enabled',
+      'file_relay_strict',
       'disable_task_polling_sleep',
     ],
   },
@@ -175,6 +177,10 @@ export function getChannelConfigurationState(
       values.proxy?.trim() ||
       (values.http_protocol && values.http_protocol !== 'auto') ||
       (values.http2_connection_shards ?? 1) > 1 ||
+      (values.file_relay_enabled != null &&
+        values.file_relay_enabled !== 'inherit') ||
+      (values.file_relay_strict != null &&
+        values.file_relay_strict !== 'inherit') ||
       values.disable_task_polling_sleep
     ),
     upstreamModelDetection:

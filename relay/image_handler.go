@@ -155,7 +155,8 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 
 	var captured *service.ImageResponseCapture
 	originalWriter := c.Writer
-	if !info.IsStream && system_setting.GetFileRelaySettings().Enabled {
+	fileRelayConfig := system_setting.GetFileRelaySettings().ForChannel(info.ChannelSetting.FileRelay)
+	if !info.IsStream && fileRelayConfig.Enabled {
 		captured = service.CaptureImageResponse(originalWriter)
 		c.Writer = captured
 		defer func() { c.Writer = originalWriter }()
@@ -203,7 +204,7 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 
 	service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), logContent)
 	if captured != nil {
-		captured.Send(c)
+		captured.Send(c, fileRelayConfig)
 	}
 	return nil
 }

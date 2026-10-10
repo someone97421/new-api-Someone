@@ -119,6 +119,10 @@ func videoProxy(c *gin.Context, taskID string, pinned *jsplugin.PinnedRoute) {
 				if artifact.Type != "video" {
 					continue
 				}
+				artifactKey = artifact.Key
+				if serveCachedTaskMedia(c, task, artifactKey) {
+					return
+				}
 				adaptor, adaptorErr := initTaskArtifactAdaptor(task)
 				if adaptorErr == nil {
 					if provider, ok := adaptor.(relaychannel.TaskContentRequestProvider); ok {
@@ -141,6 +145,9 @@ func videoProxy(c *gin.Context, taskID string, pinned *jsplugin.PinnedRoute) {
 	}
 	if descriptor == nil {
 		artifactKey = "video"
+		if serveCachedTaskMedia(c, task, artifactKey) {
+			return
+		}
 		resultURL := task.GetResultURL()
 		if isTaskMediaFallbackLoop(resultURL, task.TaskID) {
 			writeTaskMediaProxyError(c, &taskMediaProxyError{
@@ -160,15 +167,20 @@ func videoProxy(c *gin.Context, taskID string, pinned *jsplugin.PinnedRoute) {
 	}
 }
 
+func serveCachedTaskMedia(c *gin.Context, task *model.Task, artifactKey string) bool {
+	config := system_setting.GetFileRelaySettings()
+	cacheKey := fmt.Sprintf("task:%d:%s:%s", task.UserId, task.TaskID, artifactKey)
+	ref, err := service.FindCachedRelayFile(config, cacheKey)
+	return err == nil && serveRelayedFile(c, ref.ID) == nil
+}
+
 func proxyTaskMedia(c *gin.Context, task *model.Task, artifactKey string, descriptor *relaychannel.TaskContentRequest) error {
 	fileRelayConfig := system_setting.GetFileRelaySettings()
 	fileRelayCacheKey := fmt.Sprintf("task:%d:%s:%s", task.UserId, task.TaskID, artifactKey)
-	if fileRelayConfig.Enabled {
-		if ref, err := service.FindCachedRelayFile(fileRelayConfig, fileRelayCacheKey); err == nil {
-			if err := serveRelayedFile(c, ref.ID); err == nil {
-				return nil
-			}
-		}
+	// Turning off automatic relay stops new copies, not reads of existing
+	// cached files. The task and artifact still determine the cache key.
+	if serveCachedTaskMedia(c, task, artifactKey) {
+		return nil
 	}
 	if descriptor == nil {
 		return &taskMediaProxyError{
@@ -181,6 +193,19 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, artifactKey string, descri
 		return &taskMediaProxyError{
 			status: http.StatusGone, code: "artifact_gone",
 			message: "Artifact content is no longer available",
+		}
+	}
+	fileRelayConfig = fileRelayConfig.ForChannel(nil)
+	var channel *model.Channel
+	var channelErr error
+	if task.ChannelId != 0 {
+		channel, channelErr = model.CacheGetChannel(task.ChannelId)
+		if channelErr == nil {
+			fileRelayConfig = fileRelayConfig.ForChannel(channel.GetSetting().FileRelay)
+		} else {
+			// A deleted channel has no policy for new automatic copies. Inline
+			// artifacts can still be served without contacting that channel.
+			fileRelayConfig.Enabled = false
 		}
 	}
 	if strings.HasPrefix(rawURL, "data:") {
@@ -253,11 +278,10 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, artifactKey string, descri
 		}
 	}
 
-	channel, err := model.CacheGetChannel(task.ChannelId)
-	if err != nil {
+	if channel == nil {
 		return &taskMediaProxyError{
 			status: http.StatusServiceUnavailable, code: "artifact_plugin_unavailable",
-			message: "Artifact channel is unavailable", err: err,
+			message: "Artifact channel is unavailable", err: channelErr,
 		}
 	}
 	proxy := strings.TrimSpace(channel.GetSetting().Proxy)

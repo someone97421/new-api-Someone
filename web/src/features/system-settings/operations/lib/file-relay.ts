@@ -20,6 +20,7 @@ import * as z from 'zod'
 
 export const fileRelayDefaults = {
   enabled: false,
+  auto_relay_enabled: false,
   directory: './data/file-relay',
   public_url: '',
   retention_hours: 168,
@@ -33,6 +34,7 @@ export function createFileRelaySchema(t: (key: string) => string) {
   const numberError = t('Enter a whole number within the allowed range')
   return z.object({
     enabled: z.boolean(),
+    auto_relay_enabled: z.boolean().optional(),
     directory: z.string().trim().min(1, t('Storage directory is required')),
     public_url: z
       .string()

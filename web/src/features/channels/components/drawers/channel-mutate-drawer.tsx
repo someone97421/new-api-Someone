@@ -299,6 +299,8 @@ const SENSITIVE_FORM_FIELDS = [
   'proxy',
   'http_protocol',
   'http2_connection_shards',
+  'file_relay_enabled',
+  'file_relay_strict',
   'pass_through_body_enabled',
   'responses_websocket_enabled',
   'system_prompt',
@@ -2157,6 +2159,91 @@ export function ChannelMutateDrawer({
         )
       }}
     />
+  )
+
+  const fileRelayFields = (
+    <div className='grid gap-4 sm:grid-cols-2'>
+      <FormField
+        control={form.control}
+        name='file_relay_enabled'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>{t('Automatic file relay')}</FormLabel>
+            <Select
+              disabled={sensitiveLocked}
+              items={[
+                { value: 'inherit', label: t('Inherit global setting') },
+                { value: 'on', label: t('On') },
+                { value: 'off', label: t('Off') },
+              ]}
+              value={field.value || 'inherit'}
+              onValueChange={field.onChange}
+            >
+              <FormControl>
+                <SelectTrigger className='w-full'>
+                  <SelectValue />
+                </SelectTrigger>
+              </FormControl>
+              <SelectContent alignItemWithTrigger={false}>
+                <SelectGroup>
+                  <SelectItem value='inherit'>
+                    {t('Inherit global setting')}
+                  </SelectItem>
+                  <SelectItem value='on'>{t('On')}</SelectItem>
+                  <SelectItem value='off'>{t('Off')}</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <FormDescription>
+              {t(
+                'Override automatic relay for this channel. On applies even when the global automatic default is off.'
+              )}
+            </FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        control={form.control}
+        name='file_relay_strict'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>{t('File relay failure policy')}</FormLabel>
+            <Select
+              disabled={sensitiveLocked}
+              items={[
+                { value: 'inherit', label: t('Inherit global setting') },
+                { value: 'off', label: t('Lenient') },
+                { value: 'on', label: t('Strict') },
+              ]}
+              value={field.value || 'inherit'}
+              onValueChange={field.onChange}
+            >
+              <FormControl>
+                <SelectTrigger className='w-full'>
+                  <SelectValue />
+                </SelectTrigger>
+              </FormControl>
+              <SelectContent alignItemWithTrigger={false}>
+                <SelectGroup>
+                  <SelectItem value='inherit'>
+                    {t('Inherit global setting')}
+                  </SelectItem>
+                  <SelectItem value='off'>{t('Lenient')}</SelectItem>
+                  <SelectItem value='on'>{t('Strict')}</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <FormDescription>
+              {t(
+                'Lenient keeps the original result when relay fails. Strict returns a delivery error; completed generation remains billed.'
+              )}
+            </FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+    </div>
   )
 
   const routingFields = (
@@ -4690,6 +4777,7 @@ export function ChannelMutateDrawer({
                 {proxyFields}
                 {httpProtocolFields}
                 {httpShardsFields}
+                {fileRelayFields}
               </fieldset>
             </div>
             {upstreamModelDetectionFields}

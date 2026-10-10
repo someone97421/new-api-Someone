@@ -6,12 +6,14 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 )
 
 const FileRelaySettingsKey = "FileRelaySettings"
 
 type FileRelaySettings struct {
 	Enabled                bool   `json:"enabled"`
+	AutoRelayEnabled       *bool  `json:"auto_relay_enabled,omitempty"`
 	Directory              string `json:"directory"`
 	PublicURL              string `json:"public_url"`
 	RetentionHours         int    `json:"retention_hours"`
@@ -23,6 +25,24 @@ type FileRelaySettings struct {
 
 func DefaultFileRelaySettings() FileRelaySettings {
 	return FileRelaySettings{Directory: "./data/file-relay", RetentionHours: 168, CleanupIntervalMinutes: 10, DownloadTimeoutSeconds: 60, RetryCount: 2}
+}
+
+// ForChannel resolves automatic delivery separately from the upload endpoint.
+// Legacy settings inherit Enabled until an automatic default is saved.
+func (cfg FileRelaySettings) ForChannel(policy *dto.ChannelFileRelayPolicy) FileRelaySettings {
+	if cfg.AutoRelayEnabled != nil {
+		cfg.Enabled = *cfg.AutoRelayEnabled
+	}
+	if policy == nil {
+		return cfg
+	}
+	if policy.Enabled != nil {
+		cfg.Enabled = *policy.Enabled
+	}
+	if policy.Strict != nil {
+		cfg.Strict = *policy.Strict
+	}
+	return cfg
 }
 
 func ParseFileRelaySettings(raw string) (FileRelaySettings, error) {

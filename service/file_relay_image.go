@@ -14,8 +14,7 @@ import (
 
 // RelayImageResponse transforms only the explicit OpenAI image payload fields.
 // RawMessage preserves vendor metadata, large numeric values and usage exactly.
-func RelayImageResponse(ctx context.Context, body []byte) ([]byte, error) {
-	cfg := system_setting.GetFileRelaySettings()
+func RelayImageResponse(ctx context.Context, cfg system_setting.FileRelaySettings, body []byte) ([]byte, error) {
 	if !cfg.Enabled {
 		return body, nil
 	}
@@ -105,11 +104,11 @@ func (w *ImageResponseCapture) Size() int {
 }
 func (w *ImageResponseCapture) Written() bool { return w.written }
 func (w *ImageResponseCapture) Flush()        { w.WriteHeaderNow() }
-func (w *ImageResponseCapture) Send(c *gin.Context) {
+func (w *ImageResponseCapture) Send(c *gin.Context, cfg system_setting.FileRelaySettings) {
 	body := w.body.Bytes()
 	var err error
 	if w.status >= 200 && w.status < 300 {
-		body, err = RelayImageResponse(c.Request.Context(), body)
+		body, err = RelayImageResponse(c.Request.Context(), cfg, body)
 	}
 	// Upstream generation succeeded and must settle once even in strict mode.
 	// Writing the delivery error here keeps it outside the channel retry loop.

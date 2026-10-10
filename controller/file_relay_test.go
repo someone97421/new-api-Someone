@@ -18,8 +18,11 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	relaychannel "github.com/QuantumNous/new-api/relay/channel"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
@@ -208,7 +211,7 @@ func TestFileRelayImageResponse(t *testing.T) {
 				data = "[" + item + `,{"revised_prompt":"no image"}]`
 			}
 			body := []byte(`{"created":9007199254740993,"usage":{"total_tokens":9007199254740995,"nested":{"images":1}},"unknown":{"id":18446744073709551615},"data":` + data + `}`)
-			result, err := service.RelayImageResponse(context.Background(), body)
+			result, err := service.RelayImageResponse(context.Background(), cfg, body)
 			require.NoError(t, err)
 			var before, after map[string]json.RawMessage
 			require.NoError(t, common.Unmarshal(body, &before))
@@ -252,12 +255,8 @@ func TestFileRelayImageResponse(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			local := cfg
 			local.Enabled, local.Strict = tc.enabled, tc.strict
-			raw := mustFileRelayJSON(t, local)
-			common.OptionMapRWMutex.Lock()
-			common.OptionMap[system_setting.FileRelaySettingsKey] = string(raw)
-			common.OptionMapRWMutex.Unlock()
 			body := []byte(`{"usage":{"total_tokens":12},"data":[{"b64_json":"%%%"}]}`)
-			result, err := service.RelayImageResponse(context.Background(), body)
+			result, err := service.RelayImageResponse(context.Background(), local, body)
 			if tc.wantErr {
 				require.Error(t, err)
 				assert.Nil(t, result)
@@ -399,7 +398,7 @@ func TestFileRelayTaskMediaRangeCache(t *testing.T) {
 }
 
 func TestFileRelayImageCaptureStrictFailure(t *testing.T) {
-	setupFileRelayTest(t)
+	cfg, _ := setupFileRelayTest(t)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
@@ -415,7 +414,7 @@ func TestFileRelayImageCaptureStrictFailure(t *testing.T) {
 	assert.True(t, captured.Written())
 	// 与图片 handler 一样，在交付捕获内容前恢复原 writer。
 	c.Writer = original
-	captured.Send(c)
+	captured.Send(c, cfg)
 	assert.Same(t, original, c.Writer)
 	assert.Equal(t, http.StatusBadGateway, recorder.Code)
 	var response struct {
@@ -441,5 +440,165 @@ func TestFileRelayArtifactCacheIdentity(t *testing.T) {
 		descriptor := &relaychannel.TaskContentRequest{URL: "data:video/mp4;base64," + base64.RawStdEncoding.EncodeToString([]byte(key))}
 		require.NoError(t, proxyTaskMedia(c, task, key, descriptor))
 		assert.Equal(t, key, recorder.Body.String())
+	}
+}
+
+func TestFileRelayChannelPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name, global, channel   string
+		wantEnabled, wantStrict bool
+	}{
+		{"legacy-enabled", `{"enabled":true,"strict":true}`, `{}`, true, true},
+		{"legacy-disabled", `{"enabled":false}`, `{}`, false, false},
+		{"automatic-disabled-upload-enabled", `{"enabled":true,"auto_relay_enabled":false}`, `{}`, false, false},
+		{"automatic-enabled-upload-disabled", `{"enabled":false,"auto_relay_enabled":true}`, `{}`, true, false},
+		{"channel-enables", `{"enabled":false,"auto_relay_enabled":false}`, `{"file_relay":{"enabled":true}}`, true, false},
+		{"channel-disables", `{"enabled":true,"auto_relay_enabled":true,"strict":true}`, `{"file_relay":{"enabled":false}}`, false, true},
+		{"channel-relaxes", `{"enabled":true,"strict":true}`, `{"file_relay":{"strict":false}}`, true, false},
+		{"channel-strict", `{"enabled":true,"strict":false}`, `{"file_relay":{"strict":true}}`, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := system_setting.ParseFileRelaySettings(tc.global)
+			require.NoError(t, err)
+			var setting kitdto.ChannelSettings
+			require.NoError(t, common.UnmarshalJsonStr(tc.channel, &setting))
+			// Explicit false must survive a save/load round trip.
+			encoded := mustFileRelayJSON(t, setting)
+			require.NoError(t, common.Unmarshal(encoded, &setting))
+			cfg.Directory, cfg.PublicURL = t.TempDir(), "https://relay.example"
+			resolved := cfg.ForChannel(setting.FileRelay)
+			assert.Equal(t, tc.wantEnabled, resolved.Enabled)
+			assert.Equal(t, tc.wantStrict, resolved.Strict)
+			body := []byte(`{"data":[{"b64_json":"aGVsbG8="}]}`)
+			result, err := service.RelayImageResponse(context.Background(), resolved, body)
+			require.NoError(t, err)
+			if tc.wantEnabled {
+				assert.Contains(t, string(result), cfg.PublicURL+service.FileRelayContentPath)
+			} else {
+				assert.Equal(t, body, result)
+			}
+			invalid := []byte(`{"data":[{"b64_json":"%%%"}]}`)
+			result, err = service.RelayImageResponse(context.Background(), resolved, invalid)
+			if tc.wantEnabled && tc.wantStrict {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, invalid, result)
+			}
+		})
+	}
+	for _, raw := range []string{`{"file_relay":{"enabled":"on"}}`, `{"file_relay":{"strict":1}}`} {
+		channel := model.Channel{Setting: &raw}
+		assert.Error(t, channel.ValidateSettings())
+	}
+}
+
+func TestFileRelayUploadIndependentOfAutomaticDefault(t *testing.T) {
+	for _, uploadEnabled := range []bool{false, true} {
+		t.Run(strconv.FormatBool(uploadEnabled), func(t *testing.T) {
+			cfg, router := setupFileRelayTest(t)
+			cfg.Enabled = uploadEnabled
+			cfg.AutoRelayEnabled = common.GetPointer(!uploadEnabled)
+			raw := mustFileRelayJSON(t, cfg)
+			common.OptionMapRWMutex.Lock()
+			common.OptionMap[system_setting.FileRelaySettingsKey] = string(raw)
+			common.OptionMapRWMutex.Unlock()
+			recorder := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/file-relay", strings.NewReader(`{"base64":"aGVsbG8="}`))
+			req.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(recorder, req)
+			if uploadEnabled {
+				assert.Equal(t, http.StatusCreated, recorder.Code)
+			} else {
+				assert.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+			}
+		})
+	}
+}
+
+func TestFileRelayTaskUsesOwningChannelPolicy(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(strconv.FormatBool(enabled), func(t *testing.T) {
+			cfg, _ := setupFileRelayTest(t)
+			cfg.AutoRelayEnabled = common.GetPointer(!enabled)
+			raw := mustFileRelayJSON(t, cfg)
+			common.OptionMapRWMutex.Lock()
+			common.OptionMap[system_setting.FileRelaySettingsKey] = string(raw)
+			common.OptionMapRWMutex.Unlock()
+			task := setupGenericTaskTest(t)
+			oldMemory := common.MemoryCacheEnabled
+			common.MemoryCacheEnabled = false
+			t.Cleanup(func() { common.MemoryCacheEnabled = oldMemory })
+			setting := string(mustFileRelayJSON(t, kitdto.ChannelSettings{FileRelay: &kitdto.ChannelFileRelayPolicy{Enabled: &enabled}}))
+			require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", task.ChannelId).Update("setting", setting).Error)
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodGet, "/content", nil)
+			descriptor := &relaychannel.TaskContentRequest{URL: "data:video/mp4;base64,aGVsbG8="}
+			require.NoError(t, proxyTaskMedia(c, task, "video", descriptor))
+			assert.Equal(t, "hello", recorder.Body.String())
+			key := "task:" + strconv.Itoa(task.UserId) + ":" + task.TaskID + ":video"
+			_, err := service.FindCachedRelayFile(cfg, key)
+			if !enabled {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			// The public content endpoint must keep serving cached files after
+			// both the global default and the channel automatic relay are off.
+			require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", task.ChannelId).Update("setting", `{"file_relay":{"enabled":false}}`).Error)
+			recorder = httptest.NewRecorder()
+			c, _ = gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodGet, "/content", nil)
+			c.Set("id", task.UserId)
+			c.Params = gin.Params{{Key: "task_id", Value: task.TaskID}}
+			VideoProxy(c)
+			assert.Equal(t, http.StatusOK, recorder.Code)
+			assert.Equal(t, "hello", recorder.Body.String())
+		})
+	}
+}
+
+func TestFileRelayCachedTaskContentAfterChannelDeletion(t *testing.T) {
+	cfg, _ := setupFileRelayTest(t)
+	task := setupGenericTaskTest(t)
+	oldMemory := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = oldMemory })
+	plugin, err := pluginruntime.DefaultRegistry.Register(`
+export const meta = {apiVersion:1,key:"cached-video-content",name:"Cached Video",version:"1.0.0",author:{name:"Test"},models:["cached-video"],fetchMode:"per_task"};
+export function buildSubmitRequest(){return {url:"https://example.com/submit"};}
+export function parseSubmitResponse(){return {taskId:"1"};}
+export function buildQueryRequest(){return {url:"https://example.com/query"};}
+export function parseTaskResult(){return {status:"SUCCESS"};}
+export function listArtifacts(){return [{key:"video-main",type:"video",mimeType:"video/mp4"}];}
+export function buildContentRequest(){throw new Error("Cached content must not request upstream");}
+`, pluginruntime.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { pluginruntime.DefaultRegistry.Unregister(plugin.Meta.Key) })
+	task.Platform = constant.TaskPlatform(plugin.Meta.Key)
+	task.PrivateData.Execution = &model.TaskExecutionSnapshot{TaskPlugin: &model.TaskPluginSnapshot{Key: plugin.Meta.Key}}
+	task.PrivateData.ResultURL = "/v1/videos/" + task.TaskID + "/content"
+	require.NoError(t, model.DB.Save(task).Error)
+	key := "task:" + strconv.Itoa(task.UserId) + ":" + task.TaskID + ":video-main"
+	_, err = service.RelayCachedFile(context.Background(), cfg, key, service.FileRelaySource{URL: "data:video/mp4;base64,aGVsbG8="})
+	require.NoError(t, err)
+	require.NoError(t, model.DB.Delete(&model.Channel{}, task.ChannelId).Error)
+	for _, endpoint := range []string{"video", "artifact"} {
+		t.Run(endpoint, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodGet, "/content", nil)
+			c.Set("id", task.UserId)
+			if endpoint == "video" {
+				c.Params = gin.Params{{Key: "task_id", Value: task.TaskID}}
+				VideoProxy(c)
+			} else {
+				c.Params = gin.Params{{Key: "key", Value: task.TaskID}, {Key: "artifact_key", Value: "video-main"}}
+				TaskArtifactContent(c)
+			}
+			assert.Equal(t, http.StatusOK, recorder.Code)
+			assert.Equal(t, "hello", recorder.Body.String())
+		})
 	}
 }

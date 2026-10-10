@@ -1871,6 +1871,7 @@ func TestServeTaskPluginImageProtocolDisconnectDuringSubmissionKeepsDurableSettl
 }
 
 func TestServeTaskPluginImageProtocolRendersJingyuAfterProviderSwitch(t *testing.T) {
+	setupFileRelayTest(t)
 	registry := pluginruntime.NewRegistry()
 	firstSource := strings.ReplaceAll(imageProtocolTestPlugin, "image-model", "nano-banana-2")
 	firstSource = strings.ReplaceAll(firstSource, `return {data: data, vendor: "test"};`, `throw new Error("initial provider must not render the fallback result");`)
@@ -1912,8 +1913,8 @@ func TestServeTaskPluginImageProtocolRendersJingyuAfterProviderSwitch(t *testing
 		{Id: 8, Type: constant.ChannelTypeTaskPlugin, Key: "test-key", BaseURL: common.GetPointer("https://first.example"), Status: common.ChannelStatusEnabled, Models: pinned.Model, Group: group, Priority: common.GetPointer(int64(10))},
 		{Id: 9, Type: constant.ChannelTypeTaskPlugin, Key: "test-key", BaseURL: common.GetPointer("https://jingyuapi.art"), Status: common.ChannelStatusEnabled, Models: pinned.Model, Group: group, Priority: common.GetPointer(int64(0))},
 	}
-	channels[0].SetSetting(kitdto.ChannelSettings{TaskPluginKey: "image-bridge"})
-	channels[1].SetSetting(kitdto.ChannelSettings{TaskPluginKey: "jingyu"})
+	channels[0].SetSetting(kitdto.ChannelSettings{TaskPluginKey: "image-bridge", FileRelay: &kitdto.ChannelFileRelayPolicy{Enabled: common.GetPointer(true)}})
+	channels[1].SetSetting(kitdto.ChannelSettings{TaskPluginKey: "jingyu", FileRelay: &kitdto.ChannelFileRelayPolicy{Enabled: common.GetPointer(false)}})
 	require.NoError(t, database.Create(&channels).Error)
 	require.NoError(t, database.Create(&model.Ability{Group: group, Model: pinned.Model, ChannelId: 8, Enabled: true}).Error)
 	model.InitChannelCache()

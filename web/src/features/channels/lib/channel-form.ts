@@ -95,6 +95,14 @@ export function normalizeHttpProtocol(
   return HTTP_PROTOCOL_AUTO
 }
 
+export function normalizeFileRelayOverride(
+  value: unknown
+): 'inherit' | 'on' | 'off' {
+  if (value === true) return 'on'
+  if (value === false) return 'off'
+  return 'inherit'
+}
+
 export function normalizeHttp2ConnectionShards(
   value: number | undefined | null
 ): number {
@@ -269,6 +277,8 @@ export const channelFormSchema = z
       .refine(isOptionalProxyURL, ERROR_MESSAGES.INVALID_PROXY),
     http_protocol: z.enum(['auto', 'http1']).optional(),
     http2_connection_shards: z.number().int().optional(),
+    file_relay_enabled: z.enum(['inherit', 'on', 'off']).optional(),
+    file_relay_strict: z.enum(['inherit', 'on', 'off']).optional(),
     pass_through_body_enabled: z.boolean().optional(),
     responses_websocket_enabled: z.boolean().optional(),
     system_prompt: z.string().optional(),
@@ -460,6 +470,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   proxy: '',
   http_protocol: HTTP_PROTOCOL_AUTO,
   http2_connection_shards: 1,
+  file_relay_enabled: 'inherit',
+  file_relay_strict: 'inherit',
   pass_through_body_enabled: false,
   responses_websocket_enabled: false,
   system_prompt: '',
@@ -504,6 +516,8 @@ export function transformChannelToFormDefaults(
     proxy: '',
     http_protocol: HTTP_PROTOCOL_AUTO as 'auto' | 'http1',
     http2_connection_shards: 1,
+    file_relay_enabled: 'inherit' as 'inherit' | 'on' | 'off',
+    file_relay_strict: 'inherit' as 'inherit' | 'on' | 'off',
     pass_through_body_enabled: false,
     responses_websocket_enabled: false,
     system_prompt: '',
@@ -525,6 +539,12 @@ export function transformChannelToFormDefaults(
         proxy: parsed.proxy || '',
         http_protocol: protocol,
         http2_connection_shards: protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
+        file_relay_enabled: normalizeFileRelayOverride(
+          parsed.file_relay?.enabled
+        ),
+        file_relay_strict: normalizeFileRelayOverride(
+          parsed.file_relay?.strict
+        ),
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
         responses_websocket_enabled:
           parsed.responses_websocket_enabled === true,
@@ -664,6 +684,20 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
       formData.responses_websocket_enabled === true,
     system_prompt: formData.system_prompt || '',
     system_prompt_override: formData.system_prompt_override || false,
+  }
+
+  const fileRelay: { enabled?: boolean; strict?: boolean } = {}
+  if (
+    formData.file_relay_enabled &&
+    formData.file_relay_enabled !== 'inherit'
+  ) {
+    fileRelay.enabled = formData.file_relay_enabled === 'on'
+  }
+  if (formData.file_relay_strict && formData.file_relay_strict !== 'inherit') {
+    fileRelay.strict = formData.file_relay_strict === 'on'
+  }
+  if (Object.keys(fileRelay).length > 0) {
+    settingObj.file_relay = fileRelay
   }
 
   const protocol = normalizeHttpProtocol(formData.http_protocol)

@@ -56,6 +56,7 @@ export function FileRelaySection(props: { value: string }) {
     values = createFileRelaySchema(t).parse(
       props.value ? JSON.parse(props.value) : fileRelayDefaults
     )
+    values.auto_relay_enabled ??= values.enabled
   } catch {
     return (
       <ErrorState
@@ -76,7 +77,6 @@ function FileRelayForm(props: { defaultValues: FileRelayValues }) {
     resolver: zodResolver(createFileRelaySchema(t)),
     defaultValues: props.defaultValues,
   })
-  const enabled = form.watch('enabled')
   const isSaving = form.formState.isSubmitting
 
   const onSubmit = async (values: FileRelayValues) => {
@@ -107,7 +107,7 @@ function FileRelayForm(props: { defaultValues: FileRelayValues }) {
           />
           <p className='text-muted-foreground text-sm'>
             {t(
-              'Store remote URLs, Base64 data and uploaded file bytes locally, then return a URL on this site. When enabled, automatic relay currently covers non-streaming image results and task artifacts (cached on first access).'
+              'Store remote URLs, Base64 data and uploaded files locally, then return a URL on this site. Automatic relay covers non-streaming image results and task artifacts cached on first access.'
             )}
           </p>
           <p className='text-muted-foreground text-sm'>
@@ -126,7 +126,12 @@ function FileRelayForm(props: { defaultValues: FileRelayValues }) {
             render={({ field }) => (
               <SettingsSwitchItem>
                 <SettingsSwitchContent>
-                  <FormLabel>{t('Enable file relay')}</FormLabel>
+                  <FormLabel>{t('Enable direct file uploads')}</FormLabel>
+                  <FormDescription>
+                    {t(
+                      'Allow API clients to upload files through POST /v1/file-relay.'
+                    )}
+                  </FormDescription>
                 </SettingsSwitchContent>
                 <FormControl>
                   <Switch
@@ -138,7 +143,30 @@ function FileRelayForm(props: { defaultValues: FileRelayValues }) {
               </SettingsSwitchItem>
             )}
           />
-          <fieldset disabled={!enabled || isSaving} className='min-w-0'>
+          <FormField
+            control={form.control}
+            name='auto_relay_enabled'
+            render={({ field }) => (
+              <SettingsSwitchItem>
+                <SettingsSwitchContent>
+                  <FormLabel>{t('Automatic file relay by default')}</FormLabel>
+                  <FormDescription>
+                    {t(
+                      'Channels inherit this default unless overridden. A channel can enable automatic relay even when this default is off.'
+                    )}
+                  </FormDescription>
+                </SettingsSwitchContent>
+                <FormControl>
+                  <Switch
+                    checked={field.value ?? false}
+                    onCheckedChange={field.onChange}
+                    disabled={isSaving}
+                  />
+                </FormControl>
+              </SettingsSwitchItem>
+            )}
+          />
+          <fieldset disabled={isSaving} className='min-w-0'>
             <SettingsFormGrid>
               <FormField
                 control={form.control}
@@ -300,10 +328,12 @@ function FileRelayForm(props: { defaultValues: FileRelayValues }) {
                 render={({ field }) => (
                   <SettingsSwitchItem>
                     <SettingsSwitchContent>
-                      <FormLabel>{t('Require local hosting')}</FormLabel>
+                      <FormLabel>
+                        {t('Require local hosting by default')}
+                      </FormLabel>
                       <FormDescription>
                         {t(
-                          'By default, relay failures keep the original result. Strict mode returns an error when local hosting fails.'
+                          'By default, relay failures keep the original result. Strict mode returns a delivery error while completed generation remains billed. Channels can override this policy.'
                         )}
                       </FormDescription>
                     </SettingsSwitchContent>
@@ -311,7 +341,7 @@ function FileRelayForm(props: { defaultValues: FileRelayValues }) {
                       <Switch
                         checked={field.value}
                         onCheckedChange={field.onChange}
-                        disabled={!enabled || isSaving}
+                        disabled={isSaving}
                       />
                     </FormControl>
                   </SettingsSwitchItem>

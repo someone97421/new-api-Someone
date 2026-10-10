@@ -413,6 +413,10 @@ func TaskArtifactContent(c *gin.Context) {
 		return
 	}
 
+	if serveCachedTaskMedia(c, task, artifactKey) {
+		return
+	}
+
 	adaptor, err := initTaskArtifactAdaptor(task)
 	if err != nil {
 		writeTaskArtifactProjectionError(c, err)

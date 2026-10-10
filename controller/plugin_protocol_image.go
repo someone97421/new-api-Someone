@@ -16,8 +16,10 @@ import (
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relay"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 )
 
@@ -178,7 +180,11 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 	}
 	body, err := common.Marshal(response)
 	if err == nil {
-		body, err = service.RelayImageResponse(c.Request.Context(), body)
+		// Channel selection refreshes this setting on every retry, so delivery
+		// uses the provider that actually accepted the submission.
+		channelSetting, _ := common.GetContextKeyType[kitdto.ChannelSettings](c, constant.ContextKeyChannelSetting)
+		cfg := system_setting.GetFileRelaySettings().ForChannel(channelSetting.FileRelay)
+		body, err = service.RelayImageResponse(c.Request.Context(), cfg, body)
 	}
 	if err != nil {
 		respondPluginProtocolError(c, http.StatusBadGateway, "file_relay_failed", "File relay failed after generation completed")
