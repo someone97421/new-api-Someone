@@ -324,6 +324,19 @@ func serveTaskPluginProtocol(
 		respondPluginProtocolSubmissionError(c, taskErr)
 		return
 	}
+	// Submission retries may have rebound the request to another provider.
+	// Observe and render with the plugin that accepted the durable task.
+	if value, exists := c.Get(pluginruntime.ContextKeyPinnedEndpoint); exists {
+		selected, ok := value.(pluginruntime.PinnedEndpoint)
+		if !ok || selected.Plugin == nil || selected.Generation != pinned.Generation ||
+			selected.Protocol != pinned.Protocol || selected.Model != pinned.Model ||
+			selected.Operation.Name != pinned.Operation.Name {
+			respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
+			return
+		}
+		pinned = selected
+		pluginKey = selected.Plugin.Meta.Key
+	}
 	if outcome == nil || outcome.Task == nil || outcome.RelayInfo == nil ||
 		outcome.Task.UserId != relayInfo.UserId ||
 		outcome.Task.Platform != constant.TaskPlatform(pinned.Plugin.Meta.Key) {
@@ -332,6 +345,7 @@ func serveTaskPluginProtocol(
 		respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
 		return
 	}
+	protocolRequest.UpstreamModel = outcome.Task.Properties.UpstreamModelName
 	logger.LogDebug(
 		c,
 		"task_plugin subsystem=protocol event=submission_durable generation=%d plugin=%q public_task_id=%q status=%q stream=%t",

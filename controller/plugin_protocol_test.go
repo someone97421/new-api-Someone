@@ -1967,3 +1967,139 @@ func TestServeTaskPluginImageProtocolRendersJingyuAfterProviderSwitch(t *testing
 	assert.Equal(t, []int{8, 9}, attempts, "a retry must select the fallback provider")
 	assert.Equal(t, 1, downloads, "response_format must still come from the original client request")
 }
+
+func TestServeTaskPluginProtocolRendersAfterProviderSwitch(t *testing.T) {
+	for _, mode := range []string{"sync", "stream", "background"} {
+		t.Run(mode, func(t *testing.T) {
+			registry := pluginruntime.NewRegistry()
+			const source = `
+export const meta = {apiVersion:1,key:"responses-first",name:"Responses failover",version:"1.0.0",author:{name:"Test"},models:["video-model"],fetchMode:"per_task",protocols:[{name:"openai_responses",supports:["sync","stream","background"]}]};
+export function buildSubmitRequest(ctx){return {url:ctx.baseUrl+"/submit",body:ctx.requestBody};}
+export function parseSubmitResponse(){return {taskId:"upstream-task"};}
+export function buildQueryRequest(){return {url:"https://fallback.example/query"};}
+export function parseTaskResult(){return {status:"SUCCESS"};}
+function render(ctx,task){
+  if(meta.key!=="responses-second") throw new Error("initial provider must not render fallback output");
+  if(ctx.body.value.input!=="original input" || ctx.upstreamModel!=="fallback-model") throw new Error("incorrect rendering context");
+  return task.data.value;
+}
+export const protocols = {openai_responses:{
+  decodeRequest(ctx){return {kind:"submit",model:ctx.model,requestBody:{provider:meta.key,input:ctx.body.value.input,future:ctx.body.value.future}};},
+  renderEvents(ctx,task){return {events:[{type:"output",data:render(ctx,task)}],done:true};},
+  renderFinal(ctx,task){return {output:[{type:"message",role:"assistant",content:[{type:"output_text",text:render(ctx,task),annotations:[],logprobs:[]}]}]};}
+}};`
+			_, err := registry.RegisterFactory(source, pluginruntime.Options{})
+			require.NoError(t, err)
+			_, err = registry.RegisterFactory(strings.ReplaceAll(source, `key:"responses-first"`, `key:"responses-second"`), pluginruntime.Options{})
+			require.NoError(t, err)
+			generation := registry.Generation()
+			candidates := generation.LookupEndpointCandidates(http.MethodPost, "/v1/responses", "video-model")
+			require.Len(t, candidates, 2)
+			pinned := pluginruntime.PinnedEndpoint{Generation: generation, Plugin: candidates[0].Plugin, Protocol: candidates[0].Protocol, Operation: candidates[0].Operation, Model: "video-model", Candidates: candidates}
+			c, recorder := newPluginProtocolTestContext(mode == "stream", mode == "stream")
+			c.Set("expected_task_plugin_key", pinned.Plugin.Meta.Key)
+			c.Set(pluginruntime.ContextKeyPinnedEndpoint, pinned)
+			request := c.MustGet(pluginruntime.ContextKeyProtocolRequest).(pluginruntime.ProtocolRequestContext)
+			request.Model, request.Operation = pinned.Model, pinned.Operation.Name
+			clientBody := map[string]any{"model": pinned.Model, "input": "original input", "stream": mode == "stream", "background": mode == "background", "future": map[string]any{"enabled": false, "seed": 0}}
+			request.Body = map[string]any{"kind": "json", "value": clientBody}
+			request.RequestBody = clientBody
+			c.Set(pluginruntime.ContextKeyProtocolRequest, request)
+			events := []string{}
+			originalDB := model.DB
+			database := setupTaskSubmissionDatabase(t, true, &events)
+			require.NoError(t, database.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.User{}))
+			require.NoError(t, database.Create(&model.User{Id: 71, Username: "responses-fallback", Group: "default"}).Error)
+			oldMemory, oldRedis, oldRetry, oldConsume := common.MemoryCacheEnabled, common.RedisEnabled, common.RetryTimes, common.LogConsumeEnabled
+			common.MemoryCacheEnabled, common.RedisEnabled, common.RetryTimes, common.LogConsumeEnabled = true, false, 1, false
+			t.Cleanup(func() {
+				common.MemoryCacheEnabled, common.RedisEnabled, common.RetryTimes, common.LogConsumeEnabled = oldMemory, oldRedis, oldRetry, oldConsume
+				model.DB = originalDB
+				if originalDB != nil {
+					model.InitChannelCache()
+				}
+			})
+			const group = "default"
+			channels := []model.Channel{
+				{Id: 8, Type: constant.ChannelTypeTaskPlugin, Key: "test-key", BaseURL: common.GetPointer("https://first.example"), Status: common.ChannelStatusEnabled, Models: pinned.Model, Group: group, Priority: common.GetPointer(int64(10))},
+				{Id: 9, Type: constant.ChannelTypeTaskPlugin, Key: "test-key", BaseURL: common.GetPointer("https://fallback.example"), Status: common.ChannelStatusEnabled, Models: pinned.Model, Group: group, Priority: common.GetPointer(int64(0))},
+			}
+			channels[0].SetSetting(kitdto.ChannelSettings{TaskPluginKey: "responses-first"})
+			channels[1].SetSetting(kitdto.ChannelSettings{TaskPluginKey: "responses-second"})
+			require.NoError(t, database.Create(&channels).Error)
+			require.NoError(t, database.Create(&model.Ability{Group: group, Model: pinned.Model, ChannelId: 8, Enabled: true}).Error)
+			model.InitChannelCache()
+			common.SetContextKey(c, constant.ContextKeyUsingGroup, group)
+			require.Nil(t, middleware.SetupContextForSelectedChannel(c, &channels[0], pinned.Model))
+			deps := pluginProtocolTestDeps()
+			attempts := []int{}
+			billing := &taskSubmissionTestBilling{events: &events}
+			deps.submit = func(c *gin.Context, info *relaycommon.RelayInfo) (*taskSubmissionOutcome, *dto.TaskError) {
+				info.TokenGroup, info.UsingGroup, info.Billing = group, group, billing
+				return executeTaskSubmissionWith(c, info, func(c *gin.Context, info *relaycommon.RelayInfo) (*relay.TaskSubmitResult, *dto.TaskError) {
+					info.InitChannelMeta(c)
+					attempts = append(attempts, info.ChannelId)
+					selected := c.MustGet(pluginruntime.ContextKeyPinnedEndpoint).(pluginruntime.PinnedEndpoint)
+					adaptor := taskplugin.New(selected.Plugin)
+					adaptor.Init(info)
+					require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
+					if info.ChannelId == 8 {
+						c.Set("task_request", map[string]any{"first_provider_only": true})
+						return nil, &dto.TaskError{StatusCode: http.StatusServiceUnavailable, LocalError: true, Message: "first provider unavailable"}
+					}
+					require.Equal(t, 9, info.ChannelId)
+					encoded, err := common.Marshal(c.MustGet("task_request"))
+					require.NoError(t, err)
+					var converted map[string]any
+					require.NoError(t, common.Unmarshal(encoded, &converted))
+					assert.Equal(t, "responses-second", converted["provider"])
+					assert.Equal(t, "original input", converted["input"])
+					assert.Equal(t, map[string]any{"enabled": false, "seed": float64(0)}, converted["future"])
+					assert.NotContains(t, converted, "first_provider_only")
+					info.UpstreamModelName = "fallback-model"
+					return &relay.TaskSubmitResult{Platform: "responses-second", UpstreamTaskID: "fallback-task", TaskData: []byte(`{"value":"fallback output"}`), Immediate: &relaycommon.TaskInfo{Status: "SUCCESS", Progress: "100%"}}, nil
+				})
+			}
+			loads := 0
+			deps.loadTask = func(ctx context.Context, userID int, platform constant.TaskPlatform, taskID string) (*model.Task, bool, error) {
+				loads++
+				assert.Equal(t, constant.TaskPlatform("responses-second"), platform)
+				var task model.Task
+				err := database.WithContext(ctx).Where("user_id = ? AND platform = ? AND task_id = ?", userID, platform, taskID).First(&task).Error
+				return &task, err == nil, err
+			}
+			events = nil // Exclude fixture inserts from the submission lifecycle.
+			serveTaskPluginProtocol(c, pinned, deps)
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			assert.Equal(t, []int{8, 9}, attempts)
+			assert.Equal(t, []string{"reserve", "insert", "settle"}, events)
+			assert.Zero(t, billing.refunds)
+			var tasks []model.Task
+			require.NoError(t, database.Find(&tasks).Error)
+			require.Len(t, tasks, 1)
+			assert.Equal(t, constant.TaskPlatform("responses-second"), tasks[0].Platform)
+			assert.Equal(t, 9, tasks[0].ChannelId)
+			if mode == "background" {
+				assert.Zero(t, loads)
+				assert.True(t, tasks[0].PrivateData.ResponsesBackground)
+				var response dto.PluginResponsesResponse
+				require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+				assert.Equal(t, tasks[0].TaskID, response.Metadata["task_id"])
+				assert.NotContains(t, recorder.Body.String(), "fallback output")
+				return
+			}
+			assert.Equal(t, 1, loads)
+			assert.Contains(t, recorder.Body.String(), "fallback output")
+			if mode == "stream" {
+				assert.Equal(t, "text/event-stream", recorder.Header().Get("Content-Type"))
+				assert.Contains(t, pluginProtocolTestSSEEventTypes(recorder.Body.String()), "response.completed")
+				assert.NotContains(t, pluginProtocolTestSSEEventTypes(recorder.Body.String()), "response.failed")
+			} else {
+				var response dto.PluginResponsesResponse
+				require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+				assert.Equal(t, "completed", response.Status)
+				assert.Equal(t, pinned.Model, response.Model)
+			}
+		})
+	}
+}
