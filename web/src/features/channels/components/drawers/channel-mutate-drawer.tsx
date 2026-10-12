@@ -2169,34 +2169,16 @@ export function ChannelMutateDrawer({
         render={({ field }) => (
           <FormItem>
             <FormLabel>{t('Automatic file relay')}</FormLabel>
-            <Select
-              disabled={sensitiveLocked}
-              items={[
-                { value: 'inherit', label: t('Inherit global setting') },
-                { value: 'on', label: t('On') },
-                { value: 'off', label: t('Off') },
-              ]}
-              value={field.value || 'inherit'}
-              onValueChange={field.onChange}
-            >
-              <FormControl>
-                <SelectTrigger className='w-full'>
-                  <SelectValue />
-                </SelectTrigger>
-              </FormControl>
-              <SelectContent alignItemWithTrigger={false}>
-                <SelectGroup>
-                  <SelectItem value='inherit'>
-                    {t('Inherit global setting')}
-                  </SelectItem>
-                  <SelectItem value='on'>{t('On')}</SelectItem>
-                  <SelectItem value='off'>{t('Off')}</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
+            <FormControl>
+              <Switch
+                checked={field.value ?? false}
+                onCheckedChange={field.onChange}
+                disabled={sensitiveLocked}
+              />
+            </FormControl>
             <FormDescription>
               {t(
-                'Override automatic relay for this channel. On applies even when the global automatic default is off.'
+                'Enable automatic relay for this channel. The global automatic relay switch must also be on. Disabled by default.'
               )}
             </FormDescription>
             <FormMessage />

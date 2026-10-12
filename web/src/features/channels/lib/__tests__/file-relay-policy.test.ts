@@ -44,14 +44,14 @@ const channel = channelSchema.parse({
 })
 
 test.each([
-  { policy: undefined, enabled: 'inherit', strict: 'inherit' },
-  { policy: {}, enabled: 'inherit', strict: 'inherit' },
-  { policy: { enabled: true }, enabled: 'on', strict: 'inherit' },
-  { policy: { enabled: false }, enabled: 'off', strict: 'inherit' },
-  { policy: { strict: true }, enabled: 'inherit', strict: 'on' },
-  { policy: { strict: false }, enabled: 'inherit', strict: 'off' },
-  { policy: { enabled: true, strict: false }, enabled: 'on', strict: 'off' },
-  { policy: { enabled: false, strict: true }, enabled: 'off', strict: 'on' },
+  { policy: undefined, enabled: false, strict: 'inherit' },
+  { policy: {}, enabled: false, strict: 'inherit' },
+  { policy: { enabled: true }, enabled: true, strict: 'inherit' },
+  { policy: { enabled: false }, enabled: false, strict: 'inherit' },
+  { policy: { strict: true }, enabled: false, strict: 'on' },
+  { policy: { strict: false }, enabled: false, strict: 'off' },
+  { policy: { enabled: true, strict: false }, enabled: true, strict: 'off' },
+  { policy: { enabled: false, strict: true }, enabled: false, strict: 'on' },
 ])(
   'Saved file relay $policy survives form parsing and create/update serialization',
   ({ policy, enabled, strict }) => {
@@ -66,8 +66,7 @@ test.each([
     const parsed = channelFormSchema.parse(defaults)
     const create = transformFormDataToCreatePayload(parsed)
     const update = transformFormDataToUpdatePayload(parsed, channel.id)
-    const expected =
-      policy && Object.keys(policy).length > 0 ? policy : undefined
+    const expected = { ...policy, enabled }
     expect(JSON.parse(create.channel.setting ?? '{}').file_relay).toEqual(
       expected
     )
@@ -75,34 +74,42 @@ test.each([
   }
 )
 
-test('Choosing inherit clears saved overrides without leaving an empty file_relay object', () => {
+test('Inheriting strict clears its override while channel relay remains explicitly disabled', () => {
   const defaults = transformChannelToFormDefaults({
     ...channel,
-    setting: JSON.stringify({ file_relay: { enabled: false, strict: true } }),
+    setting: JSON.stringify({ file_relay: { enabled: true, strict: true } }),
   })
   const setting = JSON.parse(
     buildSettingJSON({
       ...defaults,
-      file_relay_enabled: 'inherit',
+      file_relay_enabled: false,
       file_relay_strict: 'inherit',
     })
   )
-  expect(setting).not.toHaveProperty('file_relay')
+  expect(setting.file_relay).toEqual({ enabled: false })
   expect(
-    JSON.parse(buildSettingJSON(CHANNEL_FORM_DEFAULT_VALUES))
-  ).not.toHaveProperty('file_relay')
+    JSON.parse(buildSettingJSON(CHANNEL_FORM_DEFAULT_VALUES)).file_relay
+  ).toEqual({ enabled: false })
 })
 
-test('Explicit off and lenient overrides mark channel extra settings as configured', () => {
-  const state = getChannelConfigurationState(
-    {
-      ...CHANNEL_FORM_DEFAULT_VALUES,
-      file_relay_enabled: 'off',
-      file_relay_strict: 'off',
-    },
-    {},
-    true
-  )
-  expect(state.blocks.extraSettings).toBe('configured')
-  expect(state.sections.other).toBe('configured')
-})
+test.each([
+  { enabled: false, strict: 'inherit' as const, expected: 'idle' },
+  { enabled: true, strict: 'inherit' as const, expected: 'configured' },
+  { enabled: false, strict: 'off' as const, expected: 'configured' },
+  { enabled: false, strict: 'on' as const, expected: 'configured' },
+])(
+  'Channel relay $enabled with strict $strict marks extra settings as $expected',
+  ({ enabled, strict, expected }) => {
+    const state = getChannelConfigurationState(
+      {
+        ...CHANNEL_FORM_DEFAULT_VALUES,
+        file_relay_enabled: enabled,
+        file_relay_strict: strict,
+      },
+      {},
+      true
+    )
+    expect(state.blocks.extraSettings).toBe(expected)
+    expect(state.sections.other).toBe(expected)
+  }
+)

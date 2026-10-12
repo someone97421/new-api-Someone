@@ -358,6 +358,10 @@ func TestFileRelaySettingsBoundaries(t *testing.T) {
 func TestFileRelayTaskMediaRangeCache(t *testing.T) {
 	setupFileRelayTest(t)
 	task := setupGenericTaskTest(t)
+	oldMemory := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = oldMemory })
+	require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", task.ChannelId).Update("setting", `{"file_relay":{"enabled":true}}`).Error)
 	allowPrivateTaskMediaTest(t)
 	var downloads atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -431,8 +435,12 @@ func TestFileRelayImageCaptureStrictFailure(t *testing.T) {
 }
 
 func TestFileRelayArtifactCacheIdentity(t *testing.T) {
-	setupFileRelayTest(t)
-	task := &model.Task{UserId: 7, TaskID: "two-video-artifacts"}
+	cfg, _ := setupFileRelayTest(t)
+	task := setupGenericTaskTest(t)
+	oldMemory := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = oldMemory })
+	require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", task.ChannelId).Update("setting", `{"file_relay":{"enabled":true}}`).Error)
 	for _, key := range []string{"video-main", "video", "video-main", "video"} {
 		recorder := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(recorder)
@@ -440,6 +448,8 @@ func TestFileRelayArtifactCacheIdentity(t *testing.T) {
 		descriptor := &relaychannel.TaskContentRequest{URL: "data:video/mp4;base64," + base64.RawStdEncoding.EncodeToString([]byte(key))}
 		require.NoError(t, proxyTaskMedia(c, task, key, descriptor))
 		assert.Equal(t, key, recorder.Body.String())
+		_, err := service.FindCachedRelayFile(cfg, "task:"+strconv.Itoa(task.UserId)+":"+task.TaskID+":"+key)
+		require.NoError(t, err)
 	}
 }
 
@@ -448,14 +458,19 @@ func TestFileRelayChannelPolicy(t *testing.T) {
 		name, global, channel   string
 		wantEnabled, wantStrict bool
 	}{
-		{"legacy-enabled", `{"enabled":true,"strict":true}`, `{}`, true, true},
-		{"legacy-disabled", `{"enabled":false}`, `{}`, false, false},
-		{"automatic-disabled-upload-enabled", `{"enabled":true,"auto_relay_enabled":false}`, `{}`, false, false},
-		{"automatic-enabled-upload-disabled", `{"enabled":false,"auto_relay_enabled":true}`, `{}`, true, false},
-		{"channel-enables", `{"enabled":false,"auto_relay_enabled":false}`, `{"file_relay":{"enabled":true}}`, true, false},
-		{"channel-disables", `{"enabled":true,"auto_relay_enabled":true,"strict":true}`, `{"file_relay":{"enabled":false}}`, false, true},
-		{"channel-relaxes", `{"enabled":true,"strict":true}`, `{"file_relay":{"strict":false}}`, true, false},
-		{"channel-strict", `{"enabled":true,"strict":false}`, `{"file_relay":{"strict":true}}`, true, true},
+		{"legacy-enabled-channel-missing", `{"enabled":true,"strict":true}`, `{}`, false, true},
+		{"legacy-disabled-channel-enabled", `{"enabled":false}`, `{"file_relay":{"enabled":true}}`, false, false},
+		{"legacy-enabled-channel-enabled", `{"enabled":true}`, `{"file_relay":{"enabled":true}}`, true, false},
+		{"automatic-disabled-upload-enabled", `{"enabled":true,"auto_relay_enabled":false}`, `{"file_relay":{"enabled":true}}`, false, false},
+		{"automatic-enabled-upload-disabled", `{"enabled":false,"auto_relay_enabled":true}`, `{"file_relay":{"enabled":true}}`, true, false},
+		{"global-enabled-channel-missing", `{"auto_relay_enabled":true}`, `{}`, false, false},
+		{"global-enabled-channel-empty", `{"auto_relay_enabled":true}`, `{"file_relay":{}}`, false, false},
+		{"global-disabled-channel-enabled", `{"auto_relay_enabled":false}`, `{"file_relay":{"enabled":true}}`, false, false},
+		{"both-disabled", `{"auto_relay_enabled":false}`, `{"file_relay":{"enabled":false}}`, false, false},
+		{"channel-disabled", `{"auto_relay_enabled":true,"strict":true}`, `{"file_relay":{"enabled":false}}`, false, true},
+		{"strict-only-does-not-enable", `{"auto_relay_enabled":true}`, `{"file_relay":{"strict":true}}`, false, true},
+		{"channel-relaxes", `{"auto_relay_enabled":true,"strict":true}`, `{"file_relay":{"enabled":true,"strict":false}}`, true, false},
+		{"channel-strict", `{"auto_relay_enabled":true,"strict":false}`, `{"file_relay":{"enabled":true,"strict":true}}`, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := system_setting.ParseFileRelaySettings(tc.global)
@@ -517,10 +532,20 @@ func TestFileRelayUploadIndependentOfAutomaticDefault(t *testing.T) {
 }
 
 func TestFileRelayTaskUsesOwningChannelPolicy(t *testing.T) {
-	for _, enabled := range []bool{false, true} {
-		t.Run(strconv.FormatBool(enabled), func(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		global, channel *bool
+		wantCached      bool
+	}{
+		{"both-enabled", common.GetPointer(true), common.GetPointer(true), true},
+		{"channel-disabled", common.GetPointer(true), common.GetPointer(false), false},
+		{"channel-missing", common.GetPointer(true), nil, false},
+		{"global-disabled", common.GetPointer(false), common.GetPointer(true), false},
+		{"legacy-global-enabled", nil, common.GetPointer(true), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			cfg, _ := setupFileRelayTest(t)
-			cfg.AutoRelayEnabled = common.GetPointer(!enabled)
+			cfg.AutoRelayEnabled = tc.global
 			raw := mustFileRelayJSON(t, cfg)
 			common.OptionMapRWMutex.Lock()
 			common.OptionMap[system_setting.FileRelaySettingsKey] = string(raw)
@@ -529,7 +554,7 @@ func TestFileRelayTaskUsesOwningChannelPolicy(t *testing.T) {
 			oldMemory := common.MemoryCacheEnabled
 			common.MemoryCacheEnabled = false
 			t.Cleanup(func() { common.MemoryCacheEnabled = oldMemory })
-			setting := string(mustFileRelayJSON(t, kitdto.ChannelSettings{FileRelay: &kitdto.ChannelFileRelayPolicy{Enabled: &enabled}}))
+			setting := string(mustFileRelayJSON(t, kitdto.ChannelSettings{FileRelay: &kitdto.ChannelFileRelayPolicy{Enabled: tc.channel}}))
 			require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", task.ChannelId).Update("setting", setting).Error)
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
@@ -539,13 +564,18 @@ func TestFileRelayTaskUsesOwningChannelPolicy(t *testing.T) {
 			assert.Equal(t, "hello", recorder.Body.String())
 			key := "task:" + strconv.Itoa(task.UserId) + ":" + task.TaskID + ":video"
 			_, err := service.FindCachedRelayFile(cfg, key)
-			if !enabled {
+			if !tc.wantCached {
 				require.Error(t, err)
 				return
 			}
 			require.NoError(t, err)
 			// The public content endpoint must keep serving cached files after
-			// both the global default and the channel automatic relay are off.
+			// both the global switch and the channel automatic relay are off.
+			cfg.AutoRelayEnabled = common.GetPointer(false)
+			raw = mustFileRelayJSON(t, cfg)
+			common.OptionMapRWMutex.Lock()
+			common.OptionMap[system_setting.FileRelaySettingsKey] = string(raw)
+			common.OptionMapRWMutex.Unlock()
 			require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", task.ChannelId).Update("setting", `{"file_relay":{"enabled":false}}`).Error)
 			recorder = httptest.NewRecorder()
 			c, _ = gin.CreateTestContext(recorder)

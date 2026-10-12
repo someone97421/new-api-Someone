@@ -277,7 +277,7 @@ export const channelFormSchema = z
       .refine(isOptionalProxyURL, ERROR_MESSAGES.INVALID_PROXY),
     http_protocol: z.enum(['auto', 'http1']).optional(),
     http2_connection_shards: z.number().int().optional(),
-    file_relay_enabled: z.enum(['inherit', 'on', 'off']).optional(),
+    file_relay_enabled: z.boolean().optional(),
     file_relay_strict: z.enum(['inherit', 'on', 'off']).optional(),
     pass_through_body_enabled: z.boolean().optional(),
     responses_websocket_enabled: z.boolean().optional(),
@@ -470,7 +470,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   proxy: '',
   http_protocol: HTTP_PROTOCOL_AUTO,
   http2_connection_shards: 1,
-  file_relay_enabled: 'inherit',
+  file_relay_enabled: false,
   file_relay_strict: 'inherit',
   pass_through_body_enabled: false,
   responses_websocket_enabled: false,
@@ -516,7 +516,7 @@ export function transformChannelToFormDefaults(
     proxy: '',
     http_protocol: HTTP_PROTOCOL_AUTO as 'auto' | 'http1',
     http2_connection_shards: 1,
-    file_relay_enabled: 'inherit' as 'inherit' | 'on' | 'off',
+    file_relay_enabled: false,
     file_relay_strict: 'inherit' as 'inherit' | 'on' | 'off',
     pass_through_body_enabled: false,
     responses_websocket_enabled: false,
@@ -539,9 +539,7 @@ export function transformChannelToFormDefaults(
         proxy: parsed.proxy || '',
         http_protocol: protocol,
         http2_connection_shards: protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
-        file_relay_enabled: normalizeFileRelayOverride(
-          parsed.file_relay?.enabled
-        ),
+        file_relay_enabled: parsed.file_relay?.enabled === true,
         file_relay_strict: normalizeFileRelayOverride(
           parsed.file_relay?.strict
         ),
@@ -686,19 +684,13 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
     system_prompt_override: formData.system_prompt_override || false,
   }
 
-  const fileRelay: { enabled?: boolean; strict?: boolean } = {}
-  if (
-    formData.file_relay_enabled &&
-    formData.file_relay_enabled !== 'inherit'
-  ) {
-    fileRelay.enabled = formData.file_relay_enabled === 'on'
+  const fileRelay: { enabled: boolean; strict?: boolean } = {
+    enabled: formData.file_relay_enabled === true,
   }
   if (formData.file_relay_strict && formData.file_relay_strict !== 'inherit') {
     fileRelay.strict = formData.file_relay_strict === 'on'
   }
-  if (Object.keys(fileRelay).length > 0) {
-    settingObj.file_relay = fileRelay
-  }
+  settingObj.file_relay = fileRelay
 
   const protocol = normalizeHttpProtocol(formData.http_protocol)
   const shards =

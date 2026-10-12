@@ -2819,7 +2819,7 @@ test('a New API channel binds upstream task plugins and publishes their models',
   expect(payload.models?.split(',').sort()).toEqual(['gpt-5', 'video-b-1'])
 })
 
-test('Channel file relay inherits by default and saves explicit on and lenient selections', async () => {
+test('Channel file relay is off by default and saves explicit on and lenient selections', async () => {
   const put = vi
     .spyOn(api, 'put')
     .mockResolvedValue({ data: { success: true } })
@@ -2827,19 +2827,17 @@ test('Channel file relay inherits by default and saves explicit on and lenient s
   render(<ConfigurationHarness currentRow={editingChannel} />)
   await screen.findByDisplayValue('Existing channel')
   await user.click(screen.getByRole('tab', { name: /Other Settings/ }))
-  const automatic = screen.getByRole('combobox', {
+  const automatic = screen.getByRole('switch', {
     name: 'Automatic file relay',
   })
   const failure = screen.getByRole('combobox', {
     name: 'File relay failure policy',
   })
-  expect(automatic).toHaveTextContent('Inherit global setting')
+  expect(automatic).not.toBeChecked()
   expect(failure).toHaveTextContent('Inherit global setting')
   automatic.focus()
-  await user.keyboard('{ArrowDown}')
-  expect(automatic).toHaveAttribute('aria-expanded', 'true')
-  await user.click(screen.getByRole('option', { name: 'On' }))
-  expect(automatic).toHaveTextContent('On')
+  await user.keyboard(' ')
+  expect(automatic).toBeChecked()
   await user.click(failure)
   await user.click(screen.getByRole('option', { name: 'Lenient' }))
   expect(failure).toHaveTextContent('Lenient')
@@ -2852,9 +2850,9 @@ test('Channel file relay inherits by default and saves explicit on and lenient s
   })
 })
 
-test('Channel file relay shows saved off and strict overrides and can restore inheritance', async () => {
+test('Channel file relay preserves saved on and strict settings and can disable relay while restoring strict inheritance', async () => {
   editingChannel.setting = JSON.stringify({
-    file_relay: { enabled: false, strict: true },
+    file_relay: { enabled: true, strict: true },
   })
   const put = vi
     .spyOn(api, 'put')
@@ -2863,18 +2861,15 @@ test('Channel file relay shows saved off and strict overrides and can restore in
   render(<ConfigurationHarness currentRow={editingChannel} />)
   await screen.findByDisplayValue('Existing channel')
   await user.click(screen.getByRole('tab', { name: /Other Settings/ }))
-  const automatic = screen.getByRole('combobox', {
+  const automatic = screen.getByRole('switch', {
     name: 'Automatic file relay',
   })
   const failure = screen.getByRole('combobox', {
     name: 'File relay failure policy',
   })
-  expect(automatic).toHaveTextContent('Off')
+  expect(automatic).toBeChecked()
   expect(failure).toHaveTextContent('Strict')
   await user.click(automatic)
-  await user.click(
-    screen.getByRole('option', { name: 'Inherit global setting' })
-  )
   await user.click(failure)
   await user.click(
     screen.getByRole('option', { name: 'Inherit global setting' })
@@ -2882,5 +2877,5 @@ test('Channel file relay shows saved off and strict overrides and can restore in
   await user.click(screen.getByRole('button', { name: 'Update Channel' }))
   await waitFor(() => expect(put).toHaveBeenCalled())
   const payload = put.mock.calls[0]?.[1] as { setting: string }
-  expect(JSON.parse(payload.setting)).not.toHaveProperty('file_relay')
+  expect(JSON.parse(payload.setting).file_relay).toEqual({ enabled: false })
 })

@@ -195,18 +195,17 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, artifactKey string, descri
 			message: "Artifact content is no longer available",
 		}
 	}
-	fileRelayConfig = fileRelayConfig.ForChannel(nil)
 	var channel *model.Channel
 	var channelErr error
 	if task.ChannelId != 0 {
 		channel, channelErr = model.CacheGetChannel(task.ChannelId)
-		if channelErr == nil {
-			fileRelayConfig = fileRelayConfig.ForChannel(channel.GetSetting().FileRelay)
-		} else {
-			// A deleted channel has no policy for new automatic copies. Inline
-			// artifacts can still be served without contacting that channel.
-			fileRelayConfig.Enabled = false
-		}
+	}
+	if channelErr == nil && channel != nil {
+		fileRelayConfig = fileRelayConfig.ForChannel(channel.GetSetting().FileRelay)
+	} else {
+		// A missing channel cannot opt in to new automatic copies. Inline
+		// artifacts can still be served without contacting that channel.
+		fileRelayConfig = fileRelayConfig.ForChannel(nil)
 	}
 	if strings.HasPrefix(rawURL, "data:") {
 		if len(rawURL) > taskMediaDataURLMaxEncodedBytes {

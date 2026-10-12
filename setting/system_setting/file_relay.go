@@ -27,19 +27,14 @@ func DefaultFileRelaySettings() FileRelaySettings {
 	return FileRelaySettings{Directory: "./data/file-relay", RetentionHours: 168, CleanupIntervalMinutes: 10, DownloadTimeoutSeconds: 60, RetryCount: 2}
 }
 
-// ForChannel resolves automatic delivery separately from the upload endpoint.
-// Legacy settings inherit Enabled until an automatic default is saved.
+// ForChannel requires both the global automatic relay switch and explicit channel opt-in.
+// Legacy settings use Enabled as the global switch until AutoRelayEnabled is saved.
 func (cfg FileRelaySettings) ForChannel(policy *dto.ChannelFileRelayPolicy) FileRelaySettings {
 	if cfg.AutoRelayEnabled != nil {
 		cfg.Enabled = *cfg.AutoRelayEnabled
 	}
-	if policy == nil {
-		return cfg
-	}
-	if policy.Enabled != nil {
-		cfg.Enabled = *policy.Enabled
-	}
-	if policy.Strict != nil {
+	cfg.Enabled = cfg.Enabled && policy != nil && policy.Enabled != nil && *policy.Enabled
+	if policy != nil && policy.Strict != nil {
 		cfg.Strict = *policy.Strict
 	}
 	return cfg

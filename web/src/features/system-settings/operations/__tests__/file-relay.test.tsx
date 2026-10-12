@@ -82,7 +82,7 @@ test('Missing configuration keeps both switches off and global storage settings 
   )
   expect(screen.getByLabelText('Storage directory')).toBeEnabled()
   expect(
-    screen.getByRole('switch', { name: 'Automatic file relay by default' })
+    screen.getByRole('switch', { name: 'Enable automatic file relay globally' })
   ).toHaveAttribute('aria-checked', 'false')
   expect(
     screen.getByRole('switch', { name: 'Require local hosting by default' })
@@ -220,7 +220,7 @@ test('Pending save disables controls until the response arrives', async () => {
   expect(toggle).toHaveAttribute('aria-disabled', 'true')
   expect(screen.getByLabelText('Storage directory')).toBeDisabled()
   expect(
-    screen.getByRole('switch', { name: 'Automatic file relay by default' })
+    screen.getByRole('switch', { name: 'Enable automatic file relay globally' })
   ).toHaveAttribute('aria-disabled', 'true')
   complete({ data: { success: true } })
   await waitFor(() =>
@@ -268,7 +268,7 @@ test('Maximum numeric values and a public URL with a port and path are accepted'
 })
 
 test.each([true, false])(
-  'Legacy enabled=%s initializes the automatic default and saves it independently',
+  'Legacy enabled=%s initializes the global automatic switch and saves it independently',
   async (enabled) => {
     const update = vi
       .spyOn(api, 'put')
@@ -277,7 +277,7 @@ test.each([true, false])(
     const { auto_relay_enabled: _automatic, ...saved } = legacy
     renderRelay(JSON.stringify(saved))
     const automatic = await screen.findByRole('switch', {
-      name: 'Automatic file relay by default',
+      name: 'Enable automatic file relay globally',
     })
     expect(automatic).toHaveAttribute('aria-checked', String(enabled))
     await userEvent.click(automatic)
@@ -303,7 +303,7 @@ test('Explicit automatic false overrides legacy enabled true and reset restores 
     })
   )
   const automatic = await screen.findByRole('switch', {
-    name: 'Automatic file relay by default',
+    name: 'Enable automatic file relay globally',
   })
   expect(automatic).toHaveAttribute('aria-checked', 'false')
   automatic.focus()
@@ -332,7 +332,7 @@ test('Automatic relay stays enabled when direct uploads are switched off and sav
   })
   await userEvent.click(upload)
   expect(
-    screen.getByRole('switch', { name: 'Automatic file relay by default' })
+    screen.getByRole('switch', { name: 'Enable automatic file relay globally' })
   ).toHaveAttribute('aria-checked', 'true')
   await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
   await waitFor(() => expect(update).toHaveBeenCalled())

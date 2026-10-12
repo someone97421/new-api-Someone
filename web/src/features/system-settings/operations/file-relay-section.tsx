@@ -149,10 +149,12 @@ function FileRelayForm(props: { defaultValues: FileRelayValues }) {
             render={({ field }) => (
               <SettingsSwitchItem>
                 <SettingsSwitchContent>
-                  <FormLabel>{t('Automatic file relay by default')}</FormLabel>
+                  <FormLabel>
+                    {t('Enable automatic file relay globally')}
+                  </FormLabel>
                   <FormDescription>
                     {t(
-                      'Channels inherit this default unless overridden. A channel can enable automatic relay even when this default is off.'
+                      'Automatic relay requires both this global switch and the channel switch to be on. Turning this off stops automatic relay for all channels.'
                     )}
                   </FormDescription>
                 </SettingsSwitchContent>
@@ -199,7 +201,7 @@ function FileRelayForm(props: { defaultValues: FileRelayValues }) {
                     </FormControl>
                     <FormDescription>
                       {t(
-                        'Leave blank to use TaskPublicAddress, then ServerAddress. The server appends /v1/file-relay/content/:id.'
+                        'Leave blank to use ServerAddress. The server appends /v1/file-relay/content/:id.'
                       )}
                     </FormDescription>
                     <FormMessage />
