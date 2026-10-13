@@ -278,11 +278,18 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		return nil, err
 	}
 	if descriptor.BodyType == "multipart" {
-		form, parseErr := common.ParseMultipartFormReusable(c)
-		if parseErr != nil {
-			return nil, parseErr
+		var form *multipart.Form
+		for _, part := range descriptor.Parts {
+			if part.FileRef == "" {
+				continue
+			}
+			form, err = common.ParseMultipartFormReusable(c)
+			if err != nil {
+				return nil, err
+			}
+			defer form.RemoveAll()
+			break
 		}
-		defer form.RemoveAll()
 		var body bytes.Buffer
 		writer := multipart.NewWriter(&body)
 		for _, part := range descriptor.Parts {

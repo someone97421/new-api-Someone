@@ -1870,102 +1870,120 @@ func TestServeTaskPluginImageProtocolDisconnectDuringSubmissionKeepsDurableSettl
 	assert.Empty(t, recorder.Body.String())
 }
 
-func TestServeTaskPluginImageProtocolRendersJingyuAfterProviderSwitch(t *testing.T) {
-	setupFileRelayTest(t)
-	registry := pluginruntime.NewRegistry()
-	firstSource := strings.ReplaceAll(imageProtocolTestPlugin, "image-model", "nano-banana-2")
-	firstSource = strings.ReplaceAll(firstSource, `return {data: data, vendor: "test"};`, `throw new Error("initial provider must not render the fallback result");`)
-	_, err := registry.RegisterFactory(firstSource, pluginruntime.Options{Key: "image-bridge"})
-	require.NoError(t, err)
-	source, err := builtinplugins.Source("jingyu")
-	require.NoError(t, err)
-	jingyu, err := registry.RegisterFactory(source, pluginruntime.Options{Key: "jingyu"})
-	require.NoError(t, err)
-	generation := registry.Generation()
-	candidates := generation.LookupEndpointCandidates(http.MethodPost, "/v1/images/generations", "nano-banana-2")
-	require.Len(t, candidates, 2)
-	pinned := pluginruntime.PinnedEndpoint{Generation: generation, Plugin: candidates[0].Plugin, Protocol: candidates[0].Protocol, Operation: candidates[0].Operation, Model: "nano-banana-2", Candidates: candidates}
-	c, recorder := newImageProtocolTestContext("b64_json")
-	c.Set("resolved_task_model", pinned.Model)
-	c.Set("expected_task_plugin_key", pinned.Plugin.Meta.Key)
-	c.Set(pluginruntime.ContextKeyPinnedEndpoint, pinned)
-	clientBody := map[string]any{"model": pinned.Model, "prompt": "a cat", "n": 1, "size": "1024x1024", "response_format": "b64_json", "future": map[string]any{"enabled": false, "seed": 0}}
-	request := pluginruntime.ProtocolRequestContext{
-		RouteRequestContext: pluginruntime.RouteRequestContext{Path: "/v1/images/generations", Method: http.MethodPost, Body: map[string]any{"kind": "json", "value": clientBody}, RequestBody: clientBody},
-		Protocol:            pinned.Protocol, Operation: pinned.Operation.Name, Model: pinned.Model,
-	}
-	c.Set(pluginruntime.ContextKeyProtocolRequest, request)
-	events := []string{}
-	originalDB := model.DB
-	database := setupTaskSubmissionDatabase(t, true, &events)
-	require.NoError(t, database.AutoMigrate(&model.Channel{}, &model.Ability{}))
-	oldMemory, oldRedis, oldRetry, oldConsume := common.MemoryCacheEnabled, common.RedisEnabled, common.RetryTimes, common.LogConsumeEnabled
-	common.MemoryCacheEnabled, common.RedisEnabled, common.RetryTimes, common.LogConsumeEnabled = true, false, 1, false
-	t.Cleanup(func() {
-		common.MemoryCacheEnabled, common.RedisEnabled, common.RetryTimes, common.LogConsumeEnabled = oldMemory, oldRedis, oldRetry, oldConsume
-		model.DB = originalDB
-		if originalDB != nil {
-			model.InitChannelCache()
-		}
-	})
-	const group = "jingyu-fallback-test"
-	channels := []model.Channel{
-		{Id: 8, Type: constant.ChannelTypeTaskPlugin, Key: "test-key", BaseURL: common.GetPointer("https://first.example"), Status: common.ChannelStatusEnabled, Models: pinned.Model, Group: group, Priority: common.GetPointer(int64(10))},
-		{Id: 9, Type: constant.ChannelTypeTaskPlugin, Key: "test-key", BaseURL: common.GetPointer("https://jingyuapi.art"), Status: common.ChannelStatusEnabled, Models: pinned.Model, Group: group, Priority: common.GetPointer(int64(0))},
-	}
-	channels[0].SetSetting(kitdto.ChannelSettings{TaskPluginKey: "image-bridge", FileRelay: &kitdto.ChannelFileRelayPolicy{Enabled: common.GetPointer(true)}})
-	channels[1].SetSetting(kitdto.ChannelSettings{TaskPluginKey: "jingyu", FileRelay: &kitdto.ChannelFileRelayPolicy{Enabled: common.GetPointer(false)}})
-	require.NoError(t, database.Create(&channels).Error)
-	require.NoError(t, database.Create(&model.Ability{Group: group, Model: pinned.Model, ChannelId: 8, Enabled: true}).Error)
-	model.InitChannelCache()
-	common.SetContextKey(c, constant.ContextKeyUsingGroup, group)
-	require.Nil(t, middleware.SetupContextForSelectedChannel(c, &channels[0], pinned.Model))
-	deps := pluginProtocolTestDeps()
-	attempts := []int{}
-	deps.submit = func(c *gin.Context, info *relaycommon.RelayInfo) (*taskSubmissionOutcome, *dto.TaskError) {
-		info.TokenGroup, info.UsingGroup = group, group
-		info.Billing = &taskSubmissionTestBilling{events: &events}
-		return executeTaskSubmissionWith(c, info, func(c *gin.Context, info *relaycommon.RelayInfo) (*relay.TaskSubmitResult, *dto.TaskError) {
-			info.InitChannelMeta(c)
-			attempts = append(attempts, info.ChannelId)
-			if info.ChannelId == 8 {
-				// The first provider's normalized body must not reach Jingyu.
-				c.Set("task_request", map[string]any{"corrupted_provider_field": true})
-				return nil, &dto.TaskError{StatusCode: http.StatusServiceUnavailable, LocalError: true, Message: "first provider unavailable"}
+func TestServeTaskPluginImageProtocolRendersAfterProviderSwitch(t *testing.T) {
+	for _, pluginKey := range []string{"jingyu", "rh-reverse"} {
+		t.Run(pluginKey, func(t *testing.T) {
+			setupFileRelayTest(t)
+			registry := pluginruntime.NewRegistry()
+			firstSource := strings.ReplaceAll(imageProtocolTestPlugin, "image-model", "nano-banana-2")
+			firstSource = strings.ReplaceAll(firstSource, `return {data: data, vendor: "test"};`, `throw new Error("initial provider must not render the fallback result");`)
+			_, err := registry.RegisterFactory(firstSource, pluginruntime.Options{Key: "image-bridge"})
+			require.NoError(t, err)
+			source, err := builtinplugins.Source(pluginKey)
+			require.NoError(t, err)
+			fallback, err := registry.RegisterFactory(source, pluginruntime.Options{Key: pluginKey})
+			require.NoError(t, err)
+			generation := registry.Generation()
+			candidates := generation.LookupEndpointCandidates(http.MethodPost, "/v1/images/generations", "nano-banana-2")
+			require.Len(t, candidates, 2)
+			pinned := pluginruntime.PinnedEndpoint{Generation: generation, Plugin: candidates[0].Plugin, Protocol: candidates[0].Protocol, Operation: candidates[0].Operation, Model: "nano-banana-2", Candidates: candidates}
+			c, recorder := newImageProtocolTestContext("b64_json")
+			c.Set("resolved_task_model", pinned.Model)
+			c.Set("expected_task_plugin_key", pinned.Plugin.Meta.Key)
+			c.Set(pluginruntime.ContextKeyPinnedEndpoint, pinned)
+			clientBody := map[string]any{"model": pinned.Model, "prompt": "a cat", "n": 1, "size": "1024x1024", "response_format": "b64_json", "future": map[string]any{"enabled": false, "seed": 0}}
+			request := pluginruntime.ProtocolRequestContext{
+				RouteRequestContext: pluginruntime.RouteRequestContext{Path: "/v1/images/generations", Method: http.MethodPost, Body: map[string]any{"kind": "json", "value": clientBody}, RequestBody: clientBody},
+				Protocol:            pinned.Protocol, Operation: pinned.Operation.Name, Model: pinned.Model,
 			}
-			require.Equal(t, 9, info.ChannelId)
-			info.UpstreamModelName = pinned.Model
-			adaptor := taskplugin.New(jingyu)
-			adaptor.Init(info)
-			require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
-			value, exists := c.Get("task_request")
-			require.True(t, exists)
-			encoded, err := common.Marshal(value)
-			require.NoError(t, err)
-			var converted map[string]any
-			require.NoError(t, common.Unmarshal(encoded, &converted))
-			assert.Equal(t, "1024x1024", converted["aspect_ratio"])
-			assert.Equal(t, "url", converted["response_format"])
-			assert.NotContains(t, converted, "corrupted_provider_field")
-			assert.Equal(t, map[string]any{"enabled": false, "seed": float64(0)}, converted["future"])
-			body, err := common.Marshal(map[string]any{"code": "success", "data": map[string]any{"status": "SUCCESS", "results": []any{map[string]any{"url": "https://cdn.example/fallback.png"}}}})
-			require.NoError(t, err)
-			return &relay.TaskSubmitResult{Platform: "jingyu", UpstreamTaskID: "vendor-task", TaskData: body, Immediate: &relaycommon.TaskInfo{Status: "SUCCESS", Progress: "100%"}}, nil
+			c.Set(pluginruntime.ContextKeyProtocolRequest, request)
+			events := []string{}
+			originalDB := model.DB
+			database := setupTaskSubmissionDatabase(t, true, &events)
+			require.NoError(t, database.AutoMigrate(&model.Channel{}, &model.Ability{}))
+			oldMemory, oldRedis, oldRetry, oldConsume := common.MemoryCacheEnabled, common.RedisEnabled, common.RetryTimes, common.LogConsumeEnabled
+			common.MemoryCacheEnabled, common.RedisEnabled, common.RetryTimes, common.LogConsumeEnabled = true, false, 1, false
+			t.Cleanup(func() {
+				common.MemoryCacheEnabled, common.RedisEnabled, common.RetryTimes, common.LogConsumeEnabled = oldMemory, oldRedis, oldRetry, oldConsume
+				model.DB = originalDB
+				if originalDB != nil {
+					model.InitChannelCache()
+				}
+			})
+			group := pluginKey + "-fallback-test"
+			channels := []model.Channel{
+				{Id: 8, Type: constant.ChannelTypeTaskPlugin, Key: "test-key", BaseURL: common.GetPointer("https://first.example"), Status: common.ChannelStatusEnabled, Models: pinned.Model, Group: group, Priority: common.GetPointer(int64(10))},
+				{Id: 9, Type: constant.ChannelTypeTaskPlugin, Key: "test-key", BaseURL: common.GetPointer("https://jingyuapi.art"), Status: common.ChannelStatusEnabled, Models: pinned.Model, Group: group, Priority: common.GetPointer(int64(0))},
+			}
+			channels[0].SetSetting(kitdto.ChannelSettings{TaskPluginKey: "image-bridge", FileRelay: &kitdto.ChannelFileRelayPolicy{Enabled: common.GetPointer(true)}})
+			channels[1].SetSetting(kitdto.ChannelSettings{TaskPluginKey: pluginKey, FileRelay: &kitdto.ChannelFileRelayPolicy{Enabled: common.GetPointer(false)}})
+			require.NoError(t, database.Create(&channels).Error)
+			require.NoError(t, database.Create(&model.Ability{Group: group, Model: pinned.Model, ChannelId: 8, Enabled: true}).Error)
+			model.InitChannelCache()
+			common.SetContextKey(c, constant.ContextKeyUsingGroup, group)
+			require.Nil(t, middleware.SetupContextForSelectedChannel(c, &channels[0], pinned.Model))
+			deps := pluginProtocolTestDeps()
+			attempts := []int{}
+			deps.submit = func(c *gin.Context, info *relaycommon.RelayInfo) (*taskSubmissionOutcome, *dto.TaskError) {
+				info.TokenGroup, info.UsingGroup = group, group
+				info.Billing = &taskSubmissionTestBilling{events: &events}
+				return executeTaskSubmissionWith(c, info, func(c *gin.Context, info *relaycommon.RelayInfo) (*relay.TaskSubmitResult, *dto.TaskError) {
+					info.InitChannelMeta(c)
+					attempts = append(attempts, info.ChannelId)
+					if info.ChannelId == 8 {
+						// 重试必须从原始客户端请求重新转换。
+						c.Set("task_request", map[string]any{"corrupted_provider_field": true})
+						return nil, &dto.TaskError{StatusCode: http.StatusServiceUnavailable, LocalError: true, Message: "first provider unavailable"}
+					}
+					require.Equal(t, 9, info.ChannelId)
+					info.UpstreamModelName = pinned.Model
+					adaptor := taskplugin.New(fallback)
+					adaptor.Init(info)
+					require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
+					facts, err := adaptor.ExtractUsageFactsValidated(c, info)
+					require.NoError(t, err)
+					assert.InDelta(t, 1, facts["image_count"], 0, "重试采用实际供应商的计费事实")
+					value, exists := c.Get("task_request")
+					require.True(t, exists)
+					encoded, err := common.Marshal(value)
+					require.NoError(t, err)
+					var converted map[string]any
+					require.NoError(t, common.Unmarshal(encoded, &converted))
+					if pluginKey == "rh-reverse" {
+						converted = converted["payload"].(map[string]any)
+						assert.Equal(t, "1k", converted["resolution"])
+						assert.Equal(t, "1:1", converted["aspectRatio"])
+						assert.NotContains(t, converted, "response_format")
+					} else {
+						assert.Equal(t, "1024x1024", converted["aspect_ratio"])
+						assert.Equal(t, "url", converted["response_format"])
+					}
+					assert.NotContains(t, converted, "corrupted_provider_field")
+					assert.Equal(t, map[string]any{"enabled": false, "seed": float64(0)}, converted["future"])
+					payload := map[string]any{"code": "success", "data": map[string]any{"status": "SUCCESS", "results": []any{map[string]any{"url": "https://cdn.example/fallback.png"}}}}
+					if pluginKey == "rh-reverse" {
+						payload = map[string]any{"id": "vendor-task", "status": "success", "outputUrl": "https://cdn.example/fallback.png"}
+					}
+					body, err := common.Marshal(payload)
+					require.NoError(t, err)
+					return &relay.TaskSubmitResult{Platform: constant.TaskPlatform(pluginKey), UpstreamTaskID: "vendor-task", TaskData: body, Immediate: &relaycommon.TaskInfo{Status: "SUCCESS", Progress: "100%"}}, nil
+				})
+			}
+			downloads := 0
+			deps.downloadImage = func(url string) (string, string, error) {
+				downloads++
+				assert.Equal(t, "https://cdn.example/fallback.png", url)
+				return "image/png", "QUFB", nil
+			}
+			serveTaskPluginImageProtocol(c, pinned, deps)
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			var response map[string]any
+			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+			assert.Equal(t, []any{map[string]any{"url": "https://cdn.example/fallback.png", "b64_json": "QUFB"}}, response["data"])
+			assert.Equal(t, []int{8, 9}, attempts, "a retry must select the fallback provider")
+			assert.Equal(t, 1, downloads, "response_format must still come from the original client request")
 		})
 	}
-	downloads := 0
-	deps.downloadImage = func(url string) (string, string, error) {
-		downloads++
-		assert.Equal(t, "https://cdn.example/fallback.png", url)
-		return "image/png", "QUFB", nil
-	}
-	serveTaskPluginImageProtocol(c, pinned, deps)
-	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
-	var response map[string]any
-	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
-	assert.Equal(t, []any{map[string]any{"url": "https://cdn.example/fallback.png", "b64_json": "QUFB"}}, response["data"])
-	assert.Equal(t, []int{8, 9}, attempts, "a retry must select the fallback provider")
-	assert.Equal(t, 1, downloads, "response_format must still come from the original client request")
 }
 
 func TestServeTaskPluginProtocolRendersAfterProviderSwitch(t *testing.T) {
