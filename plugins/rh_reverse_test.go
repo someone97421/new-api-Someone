@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel"
 	taskplugin "github.com/QuantumNous/new-api/relay/channel/task/jsplugin"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -175,6 +176,93 @@ func TestRHReverseNativeMultipartFiles(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, opened.Close())
 		assert.Equal(t, file.Filename, string(data))
+	}
+}
+
+func TestRHReverseSubmitHTTPMultipart(t *testing.T) {
+	service.InitHttpClient()
+	plugin := rhReversePlugin(t)
+	for _, fileCount := range []int{0, 2} {
+		name := "generate"
+		if fileCount > 0 {
+			name = "edit"
+		}
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, http.MethodPost, r.Method)
+				assert.Equal(t, "/api/tasks", r.URL.Path)
+				if err := r.ParseMultipartForm(1024); err != nil {
+					http.Error(w, "multipart header or boundary missing", http.StatusBadRequest)
+					return
+				}
+				defer r.MultipartForm.RemoveAll()
+				assert.Equal(t, "seedream5-flash", r.FormValue("modelKey"))
+				assert.Equal(t, "一只小恐龙", r.FormValue("prompt"))
+				assert.Equal(t, "2k", r.FormValue("resolution"))
+				assert.Equal(t, "9:16", r.FormValue("aspectRatio"))
+				assert.Equal(t, "jpeg", r.FormValue("outputFormat"))
+				assert.Len(t, r.MultipartForm.File["image"], fileCount)
+				for _, file := range r.MultipartForm.File["image"] {
+					opened, err := file.Open()
+					if !assert.NoError(t, err) {
+						return
+					}
+					content, err := io.ReadAll(opened)
+					assert.NoError(t, err)
+					assert.NoError(t, opened.Close())
+					assert.Equal(t, file.Filename, string(content))
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"rh-task","status":"queued"}`))
+			}))
+			defer server.Close()
+			fields := map[string]any{"model": "seedream5-flash", "prompt": "一只小恐龙", "resolution": "2k", "aspect_ratio": "9:16", "output_format": "jpeg"}
+			encoded, err := common.Marshal(fields)
+			require.NoError(t, err)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(encoded))
+			c.Request.Header.Set("Content-Type", "application/json")
+			bodyContext := map[string]any{"kind": "json", "value": fields}
+			if fileCount > 0 {
+				var input bytes.Buffer
+				writer := multipart.NewWriter(&input)
+				for key, value := range fields {
+					require.NoError(t, writer.WriteField(key, value.(string)))
+				}
+				files := []any{}
+				for i, filename := range []string{"first.png", "second.png"} {
+					part, err := writer.CreateFormFile("image[]", filename)
+					require.NoError(t, err)
+					_, err = io.WriteString(part, filename)
+					require.NoError(t, err)
+					files = append(files, map[string]any{"field": "image[]", "ref": jsplugin.FileReference("image[]", i), "filename": filename})
+				}
+				require.NoError(t, writer.Close())
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewReader(input.Bytes()))
+				c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+				form, err := common.ParseMultipartFormReusable(c)
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, form.RemoveAll()) })
+				bodyContext = map[string]any{"kind": "multipart", "fields": form.Value, "files": files}
+			}
+			value, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_image", "decodeRequest"}, map[string]any{
+				"model": "seedream5-flash", "operation": name, "body": bodyContext,
+			})
+			require.NoError(t, err)
+			intent := rhReverseObject(t, value)
+			c.Set("task_request", intent["requestBody"])
+			info := &relaycommon.RelayInfo{OriginModelName: "seedream5-flash", ChannelMeta: &relaycommon.ChannelMeta{
+				ChannelType: constant.ChannelTypeTaskPlugin, ChannelBaseUrl: server.URL, UpstreamModelName: "seedream5-flash", ApiKey: "test-key",
+			}, TaskRelayInfo: &relaycommon.TaskRelayInfo{Action: "generate_image"}}
+			adaptor := taskplugin.New(plugin)
+			adaptor.Init(info)
+			body, err := adaptor.BuildRequestBody(c, info)
+			require.NoError(t, err)
+			response, err := adaptor.DoRequest(c, info, body)
+			require.NoError(t, err)
+			defer response.Body.Close()
+			assert.Equal(t, http.StatusOK, response.StatusCode)
+		})
 	}
 }
 
