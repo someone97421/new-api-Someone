@@ -932,6 +932,106 @@ func (a *TaskAdaptor) ParseTaskResult(task *model.Task, resp *http.Response, bod
 	return result, nil
 }
 
+// ResubmitTask asks the plugin to replace a failed upstream task with a fresh
+// submission on the same channel. The optional buildResubmitRequest hook
+// receives the poll context (including plugin state) and the failed result,
+// and returns an ordinary request descriptor — or an empty object to decline.
+// The descriptor passes the same base URL/allowed hosts validation as
+// submissions, and its response is parsed by the plugin's own
+// parseSubmitResponse. A nil outcome means the plugin declined or does not
+// implement the hook.
+func (a *TaskAdaptor) ResubmitTask(ctx context.Context, task *model.Task, failure *relaycommon.TaskInfo) (*relaycommon.TaskResubmitOutcome, error) {
+	if a.plugin == nil || task == nil || !a.hasHook(ctx, "buildResubmitRequest") {
+		return nil, nil
+	}
+	key, baseURL, proxy := a.queryCredentials()
+	if task.PrivateData.Key != "" {
+		key = task.PrivateData.Key
+	}
+	hookContext, err := a.queryContext(task, key, baseURL, proxy)
+	if err != nil {
+		return nil, err
+	}
+	fetchContext := pluginruntime.WithFetcher(ctx, a.hookFetcher(baseURL, proxy))
+	descriptor, err := a.requestDescriptor(fetchContext, "buildResubmitRequest", hookContext, jsonValue(failure))
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(descriptor.URL) == "" {
+		// The plugin declined to resubmit this failure.
+		return nil, nil
+	}
+	resp, err := a.doFetchDescriptor(baseURL, proxy, descriptor)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTaskPluginPersistedJSONBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxTaskPluginPersistedJSONBytes {
+		return nil, fmt.Errorf("task resubmit response exceeds size limit")
+	}
+	var responseBody any = string(body)
+	var decoded any
+	if common.Unmarshal(body, &decoded) == nil {
+		responseBody = decoded
+	}
+	headers := make(map[string][]string, len(resp.Header))
+	maps.Copy(headers, resp.Header)
+	value, err := a.plugin.Engine.Call(ctx, "parseSubmitResponse", hookContext, map[string]any{"statusCode": resp.StatusCode, "headers": headers, "body": responseBody})
+	if err != nil {
+		return nil, err
+	}
+	var parsed submitResponse
+	if err = convert(value, &parsed); err != nil || strings.TrimSpace(parsed.TaskID) == "" {
+		if err == nil {
+			err = fmt.Errorf("plugin returned an empty taskId")
+		}
+		return nil, err
+	}
+	var taskData []byte
+	if parsed.TaskData != nil {
+		taskData, err = common.Marshal(parsed.TaskData)
+		if err != nil || len(taskData) > maxTaskPluginPersistedJSONBytes {
+			if err == nil {
+				err = fmt.Errorf("task data exceeds size limit")
+			}
+			return nil, err
+		}
+	}
+	pluginState, present := encodeReturnedPluginState(value)
+	if !present {
+		// Keep the previous state so the resubmit capability survives rounds
+		// even when the plugin only emits state from its submit context.
+		pluginState = task.PrivateData.PluginState
+	}
+	if len(pluginState) > maxTaskPluginPersistedJSONBytes {
+		return nil, fmt.Errorf("resubmit state exceeds size limit")
+	}
+	outcome := &relaycommon.TaskResubmitOutcome{UpstreamTaskID: parsed.TaskID, TaskData: taskData, PluginState: pluginState}
+	if parsed.Immediate == nil {
+		return outcome, nil
+	}
+	immediate := &relaycommon.TaskInfo{
+		Code: parsed.Immediate.Code, TaskID: parsed.Immediate.TaskID,
+		Status: parsed.Immediate.Status, Progress: parsed.Immediate.Progress,
+		Reason: parsed.Immediate.Reason, Url: parsed.Immediate.URL, RemoteUrl: parsed.Immediate.RemoteURL,
+		CompletionTokens: positiveInt(parsed.Immediate.CompletionTokens), TotalTokens: positiveInt(parsed.Immediate.TotalTokens),
+	}
+	outcome.Immediate = immediate
+	if immediate.Status == model.TaskStatusSuccess && a.hasHook(ctx, "extractUsageOnComplete") {
+		facts, hookErr := a.plugin.Engine.Call(ctx, "extractUsageOnComplete", hookContext, jsonValue(immediate), responseBody)
+		if hookErr == nil {
+			upstreamModel, _ := hookContext["upstreamModel"].(string)
+			originModel, _ := hookContext["model"].(string)
+			a.applyCompletionUsageFacts(immediate, facts, upstreamModel, originModel)
+		}
+	}
+	return outcome, nil
+}
+
 func (a *TaskAdaptor) applyCompletionUsageFacts(result *relaycommon.TaskInfo, facts any, models ...string) error {
 	values, err := a.validatedCompletionUsageFacts(facts, models...)
 	if err != nil {

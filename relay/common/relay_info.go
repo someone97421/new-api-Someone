@@ -1138,6 +1138,18 @@ func FailTaskInfo(reason string) *TaskInfo {
 	}
 }
 
+// TaskResubmitOutcome carries a plugin-driven replacement submission after the
+// upstream reported FAILURE. The host swaps the stored upstream task ID for
+// UpstreamTaskID and keeps the public task non-terminal, so polling and
+// retrieval continue on the same public task ID. Immediate holds a terminal
+// result when the replacement completed synchronously.
+type TaskResubmitOutcome struct {
+	UpstreamTaskID string
+	TaskData       []byte
+	PluginState    []byte
+	Immediate      *TaskInfo
+}
+
 // RemoveDisabledFields 从请求 JSON 数据中移除渠道设置中禁用的字段
 // service_tier: 服务层级字段，可能导致额外计费（OpenAI、Claude、Responses API 支持）
 // inference_geo: Claude 数据驻留推理区域字段（仅 Claude 支持，默认过滤）

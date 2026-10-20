@@ -40,6 +40,18 @@ type BatchTaskPollingAdaptor interface {
 	ParseBatchResult(tasks []*model.Task, resp *http.Response, body []byte) (map[string]*BatchTaskResult, error)
 }
 
+// MaxTaskPluginResubmits bounds plugin-driven same-channel resubmissions after
+// the upstream reported FAILURE. The cap is host-enforced because plugin state
+// is plugin-owned: a buggy plugin must not loop resubmissions forever.
+const MaxTaskPluginResubmits = 2
+
+// TaskPluginResubmitter is implemented by polling adaptors whose plugin can
+// replace a failed upstream task with a fresh submission on the same channel.
+// A nil outcome means the plugin declined this failure.
+type TaskPluginResubmitter interface {
+	ResubmitTask(ctx context.Context, task *model.Task, failure *relaycommon.TaskInfo) (*relaycommon.TaskResubmitOutcome, error)
+}
+
 const (
 	pollClassOK           = "ok"
 	pollClassOtherClient  = "other_client"
@@ -564,6 +576,24 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		task.PrivateData.PollFailures = 0
 	}
 
+	if parsedStatus == model.TaskStatusFailure {
+		replacement, resubmitted, resubmitErr := tryTaskPluginResubmit(ctx, adaptor, task, taskResult)
+		if resubmitErr != nil {
+			logger.LogWarn(ctx, common.LogText("task %s plugin resubmit failed; keeping the failure: %s", task.TaskID, resubmitErr.Error()))
+		}
+		if resubmitted {
+			if replacement == nil {
+				// Asynchronous replacement: the swapped upstream identity is
+				// already persisted and the task stays non-terminal.
+				return nil
+			}
+			// Synchronously terminal replacement: adopt its result and let the
+			// ordinary terminal flow below settle billing exactly once.
+			taskResult = replacement
+			parsedStatus = model.TaskStatus(replacement.Status)
+		}
+	}
+
 	now := time.Now().Unix()
 	shouldFinalizeBilling := false
 
@@ -634,6 +664,55 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	}
 
 	return nil
+}
+
+// tryTaskPluginResubmit offers a FAILURE poll result to the plugin for a
+// same-channel resubmission. An asynchronous replacement is persisted here
+// (swapped upstream identity, task stays non-terminal) and reported as
+// (nil, true, nil); a synchronously terminal replacement only mutates the
+// task and returns the terminal TaskInfo so the caller's ordinary terminal
+// flow can settle billing exactly once. A resubmit error keeps the original
+// failure; the host cap is enforced before the plugin is consulted.
+func tryTaskPluginResubmit(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, failure *relaycommon.TaskInfo) (*relaycommon.TaskInfo, bool, error) {
+	resubmitter, ok := adaptor.(TaskPluginResubmitter)
+	if !ok {
+		return nil, false, nil
+	}
+	if task.PrivateData.Resubmits >= MaxTaskPluginResubmits {
+		return nil, false, nil
+	}
+	outcome, err := resubmitter.ResubmitTask(ctx, task, failure)
+	if err != nil {
+		return nil, false, err
+	}
+	if outcome == nil || strings.TrimSpace(outcome.UpstreamTaskID) == "" {
+		return nil, false, nil
+	}
+	immediate := outcome.Immediate
+	terminal := immediate != nil &&
+		(model.TaskStatus(immediate.Status) == model.TaskStatusSuccess || model.TaskStatus(immediate.Status) == model.TaskStatusFailure)
+	snap := task.Snapshot()
+	task.PrivateData.UpstreamTaskID = outcome.UpstreamTaskID
+	task.PrivateData.Resubmits++
+	task.PrivateData.PollFailures = 0
+	if len(outcome.PluginState) > 0 {
+		task.PrivateData.PluginState = outcome.PluginState
+	}
+	if len(outcome.TaskData) > 0 {
+		task.Data = outcome.TaskData
+	}
+	logger.LogInfo(ctx, common.LogText("task %s resubmitted by plugin after failure (attempt %d/%d), new upstream task %s",
+		task.TaskID, task.PrivateData.Resubmits, MaxTaskPluginResubmits, outcome.UpstreamTaskID))
+	if terminal {
+		// The caller persists everything through its ordinary terminal path.
+		return immediate, true, nil
+	}
+	task.Status = model.TaskStatusSubmitted
+	task.Progress = taskcommon.ProgressSubmitted
+	if _, err := task.UpdateWithStatus(snap.Status); err != nil {
+		return nil, false, fmt.Errorf("persist resubmitted task: %w", err)
+	}
+	return nil, true, nil
 }
 
 // finalizeTerminalTask 终态统一收尾（状态 CAS 赢家调用，恰好一次）：采样 + 结算 + 失败兜底退款。

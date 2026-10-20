@@ -131,6 +131,9 @@ type TaskPrivateData struct {
 	PluginState json.RawMessage `json:"plugin_state,omitempty"`
 	// PollFailures counts consecutive unrecognized or transient poll outcomes.
 	PollFailures int `json:"poll_failures,omitempty"`
+	// Resubmits counts plugin-driven same-channel resubmissions after the
+	// upstream reported FAILURE. The host caps it at service.MaxTaskPluginResubmits.
+	Resubmits int `json:"resubmits,omitempty"`
 	// ResultDiscarded marks an immediate terminal result whose submit route
 	// declared retainResult: false. The upstream snapshot was never written
 	// and every retrieval surface treats the task as not found. The zero

@@ -2492,3 +2492,115 @@ func TestTaskAdaptorChainsSunoBatchFetchThroughNewAPIUpstream(t *testing.T) {
 	assert.Equal(t, "SUCCESS", results["task_up_public"].TaskInfo.Status)
 	assert.Equal(t, []string{"POST /suno/submit/MUSIC", "POST /suno/fetch"}, seen)
 }
+
+func TestTaskAdaptorResubmitTask(t *testing.T) {
+	service.InitHttpClient()
+	var posted map[string]any
+	base := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/resubmit" && r.Method == http.MethodPost {
+			assert.Equal(t, "Bearer key", r.Header.Get("Authorization"))
+			body, _ := io.ReadAll(r.Body)
+			require.NoError(t, common.Unmarshal(body, &posted))
+			_, _ = w.Write([]byte(`{"id":"t2","status":"submitted"}`))
+			return
+		}
+		t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+	}))
+	defer base.Close()
+	source := mockPlugin + `
+export function buildResubmitRequest(ctx, failure) {
+  if (!ctx.state || !ctx.state.resubmit) return {};
+  return { url: ctx.baseUrl + "/resubmit", method: "POST", headers: {Authorization: "Bearer " + ctx.apiKey, "Content-Type": "application/json"}, body: ctx.state.resubmit.body };
+}
+`
+	plugin, err := pluginruntime.NewRegistry().Register(source, pluginruntime.Options{})
+	require.NoError(t, err)
+	adaptor := New(plugin)
+	adaptor.Init(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: base.URL, ApiKey: "key"}})
+	task := &model.Task{TaskID: "pub-1", Status: model.TaskStatusInProgress, Action: "text_to_video"}
+	task.PrivateData.UpstreamTaskID = "t1"
+	task.PrivateData.PluginState = []byte(`{"resubmit":{"kind":"video","body":{"prompt":"a cat"},"attempts":0}}`)
+
+	outcome, err := adaptor.ResubmitTask(t.Context(), task, &relaycommon.TaskInfo{Status: "FAILURE", Reason: "upstream overloaded"})
+	require.NoError(t, err)
+	require.NotNil(t, outcome)
+	assert.Equal(t, "t2", outcome.UpstreamTaskID)
+	assert.Nil(t, outcome.Immediate)
+	assert.Equal(t, map[string]any{"prompt": "a cat"}, posted)
+	// mockPlugin's parseSubmitResponse returns no state; the previous state must
+	// be preserved so the resubmit capability survives further rounds.
+	assert.JSONEq(t, `{"resubmit":{"kind":"video","body":{"prompt":"a cat"},"attempts":0}}`, string(outcome.PluginState))
+
+	// A plugin that has no resubmit state declines by returning an empty object.
+	task.PrivateData.PluginState = []byte(`{}`)
+	outcome, err = adaptor.ResubmitTask(t.Context(), task, &relaycommon.TaskInfo{Status: "FAILURE", Reason: "upstream overloaded"})
+	require.NoError(t, err)
+	assert.Nil(t, outcome)
+
+	// A plugin without the hook declines as well.
+	plain, err := pluginruntime.NewRegistry().Register(mockPlugin, pluginruntime.Options{})
+	require.NoError(t, err)
+	plainAdaptor := New(plain)
+	plainAdaptor.Init(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: base.URL, ApiKey: "key"}})
+	outcome, err = plainAdaptor.ResubmitTask(t.Context(), task, &relaycommon.TaskInfo{Status: "FAILURE"})
+	require.NoError(t, err)
+	assert.Nil(t, outcome)
+}
+
+func TestTaskAdaptorResubmitTaskValidatesHost(t *testing.T) {
+	service.InitHttpClient()
+	source := mockPlugin + `
+export function buildResubmitRequest(ctx, failure) {
+  return { url: "https://evil.example/resubmit", method: "POST", body: {} };
+}
+`
+	plugin, err := pluginruntime.NewRegistry().Register(source, pluginruntime.Options{})
+	require.NoError(t, err)
+	adaptor := New(plugin)
+	adaptor.Init(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: "https://provider.example", ApiKey: "key"}})
+	task := &model.Task{TaskID: "pub-1", Status: model.TaskStatusInProgress, Action: "text_to_video"}
+	task.PrivateData.UpstreamTaskID = "t1"
+	_, err = adaptor.ResubmitTask(t.Context(), task, &relaycommon.TaskInfo{Status: "FAILURE"})
+	require.ErrorContains(t, err, "not allowed")
+}
+
+func TestTaskAdaptorResubmitTaskImmediate(t *testing.T) {
+	service.InitHttpClient()
+	base := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"t3","url":"https://cdn.example/v.mp4"}`))
+	}))
+	defer base.Close()
+	source := strings.Replace(mockPlugin, `export function parseSubmitResponse(ctx, resp) {
+  return {
+    taskId: resp.body.id,
+    taskData: {accepted: true, status: resp.statusCode},
+  };
+}`, `export function parseSubmitResponse(ctx, resp) {
+  return {
+    taskId: resp.body.id,
+    taskData: resp.body,
+    immediate: {taskId: resp.body.id, status: "SUCCESS", progress: "100%", url: resp.body.url},
+    state: {resubmit: {kind: "video", body: {prompt: "x"}, attempts: 1}},
+  };
+}`, 1) + `
+export function buildResubmitRequest(ctx, failure) {
+  return { url: ctx.baseUrl + "/resubmit", method: "POST", body: {} };
+}
+`
+	plugin, err := pluginruntime.NewRegistry().Register(source, pluginruntime.Options{})
+	require.NoError(t, err)
+	adaptor := New(plugin)
+	adaptor.Init(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: base.URL, ApiKey: "key"}})
+	task := &model.Task{TaskID: "pub-1", Status: model.TaskStatusInProgress, Action: "text_to_video"}
+	task.PrivateData.UpstreamTaskID = "t1"
+	outcome, err := adaptor.ResubmitTask(t.Context(), task, &relaycommon.TaskInfo{Status: "FAILURE", Reason: "boom"})
+	require.NoError(t, err)
+	require.NotNil(t, outcome)
+	require.NotNil(t, outcome.Immediate)
+	assert.Equal(t, "t3", outcome.UpstreamTaskID)
+	assert.Equal(t, model.TaskStatusSuccess, outcome.Immediate.Status)
+	assert.Equal(t, "https://cdn.example/v.mp4", outcome.Immediate.Url)
+	// extractUsageOnComplete from mockPlugin reports 23 upstream units.
+	assert.Equal(t, 23, outcome.Immediate.TotalTokens)
+	assert.Contains(t, string(outcome.PluginState), `"attempts":1`)
+}

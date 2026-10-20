@@ -32,12 +32,54 @@ const VIDEO_USAGE_SCHEMA = {
 };
 const MAX_VIDEO_SECONDS = 3600; // 与宿主 relaycommon.MaxTaskDurationSeconds 一致
 
+// 失败重提（同供应商自救）：上游任务终态 FAILURE 时，宿主调 buildResubmitRequest
+// 用这里存下的请求体重新提交一次新任务，公开任务 ID 不变、只结算一次。
+// 上限与宿主 service.MaxTaskPluginResubmits 保持一致，双重兜底。
+const MAX_RESUBMITS = 2;
+// 超过该体积的请求体不存入 state（宿主上限 1MB，留足余量）。
+const RESUBMIT_STATE_BYTES = 64 * 1024;
+// 内容审核、参数错误类失败重提无意义，直接放行失败。
+const NON_RETRYABLE_FAILURE =
+  /content.?policy|policy violat|nsfw|审核|敏感|invalid prompt|prompt is required|not supported|must be|unsupported|permission|quota|余额|欠费/i;
+
+// 在提交解析上下文（带 requestBody）里生成重提状态；在轮询/重提解析上下文
+// （只有 state）里继承并累加次数。无法重建请求体（如 multipart 文件上传）时不存。
+function buildResubmitState(ctx) {
+  if (ctx.requestBody) {
+    if (isVideo(ctx)) {
+      const rb = ctx.requestBody;
+      if (!rb || typeof rb !== "object" || !rb.payload || (rb.uploads || []).length) return null;
+      return capResubmitState({ kind: "video", body: rb.payload, attempts: 0 });
+    }
+    if (typeof ctx.requestBody !== "object" || Array.isArray(ctx.requestBody)) return null;
+    return capResubmitState({ kind: "image", body: ctx.requestBody, attempts: 0 });
+  }
+  const previous = ctx.state && ctx.state.resubmit;
+  if (!previous || !previous.body) return null;
+  return capResubmitState({ kind: previous.kind, body: previous.body, attempts: (previous.attempts || 0) + 1 });
+}
+
+function capResubmitState(state) {
+  try {
+    if (JSON.stringify(state).length > RESUBMIT_STATE_BYTES) return null;
+  } catch (e) {
+    return null;
+  }
+  return state;
+}
+
+function withResubmitState(ctx, result) {
+  const state = buildResubmitState(ctx);
+  if (state) result.state = { resubmit: state };
+  return result;
+}
+
 export const meta = {
   apiVersion: 1,
   key: "jingyu",
   name: "鲸鱼 AI",
   icon: "text:鲸鱼",
-  version: "1.2.0",
+  version: "1.3.0",
   author: { name: "new-api" },
   website: "https://jingyuapi.art",
   baseUrl: "https://jingyuapi.art",
@@ -233,13 +275,36 @@ export function parseSubmitResponse(ctx, response) {
   if (Array.isArray(payload.task_ids) && payload.task_ids.length > 1) throw new Error("Jingyu unexpectedly returned multiple tasks");
   if (taskId) {
     const parsed = isVideo(ctx) ? parseTaskResult(ctx, body) : null;
-    return { taskId: taskId, taskData: body, immediate: parsed && ["SUCCESS", "FAILURE"].includes(parsed.status) ? parsed : undefined };
+    return withResubmitState(ctx, { taskId: taskId, taskData: body, immediate: parsed && ["SUCCESS", "FAILURE"].includes(parsed.status) ? parsed : undefined });
   }
   if (isVideo(ctx)) throw new Error("Jingyu video response has no task_id");
   // 兼容上游立即完成的图片响应，不伪造可轮询的上游任务 ID。
   const images = imageEntries(body);
   if (!images.length) throw new Error("Jingyu response has no task_id or image output");
-  return { taskId: ctx.publicTaskId, taskData: body, immediate: { status: "SUCCESS", progress: "100%", url: images[0].url || "" } };
+  return withResubmitState(ctx, { taskId: ctx.publicTaskId, taskData: body, immediate: { status: "SUCCESS", progress: "100%", url: images[0].url || "" } });
+}
+
+// 宿主在轮询看到 FAILURE 且未超上限时调用本钩子；返回空对象表示放弃重提。
+// 重提走与提交完全相同的描述符校验（baseUrl + allowedHosts），响应由
+// parseSubmitResponse 解析，新上游任务 ID 由宿主换绑，公开任务 ID 不变。
+export function buildResubmitRequest(ctx, failure) {
+  const state = ctx.state && ctx.state.resubmit;
+  if (!state || !state.body) return {};
+  if ((state.attempts || 0) >= MAX_RESUBMITS) return {};
+  const reason = String((failure && failure.reason) || "");
+  if (NON_RETRYABLE_FAILURE.test(reason)) return {};
+  const body = utils.json.clone(state.body);
+  body.model = ctx.upstreamModel || ctx.model;
+  const headers = { Authorization: "Bearer " + ctx.apiKey, "Content-Type": "application/json" };
+  if (state.kind === "video") {
+    return { url: videoPath(ctx), method: "POST", headers: headers, body: body };
+  }
+  return {
+    url: ctx.baseUrl.replace(/\/+$/, "") + (ctx.upstream && ctx.upstream.kind === "new_api" ? "/jingyu" : "") + "/v1/image/generations",
+    method: "POST",
+    headers: headers,
+    body: body,
+  };
 }
 
 export function buildQueryRequest(ctx) {
