@@ -32,6 +32,7 @@ import { formatLogQuota, formatTimestampToDate } from '@/lib/format'
 import {
   getServerErrorMessage,
   requireServerSuccess,
+  translateServerText,
 } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 
@@ -208,7 +209,10 @@ function TaskDetailsContent(props: TaskDetailsDialogProps) {
             />
           ) : null}
           {props.log.fail_reason ? (
-            <DetailRow label={t('Fail Reason')} value={props.log.fail_reason} />
+            <DetailRow
+              label={t('Fail Reason')}
+              value={translateServerText(t, props.log.fail_reason)}
+            />
           ) : null}
           {canReadTaskData ? (
             <div className='space-y-2 pt-1'>

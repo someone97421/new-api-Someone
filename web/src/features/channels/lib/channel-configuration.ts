@@ -86,6 +86,7 @@ const CONFIGURATION_BLOCKS = {
       'http2_connection_shards',
       'file_relay_enabled',
       'file_relay_strict',
+      'tls_insecure_skip_verify',
       'disable_task_polling_sleep',
     ],
   },
@@ -180,6 +181,7 @@ export function getChannelConfigurationState(
       values.file_relay_enabled ||
       (values.file_relay_strict != null &&
         values.file_relay_strict !== 'inherit') ||
+      values.tls_insecure_skip_verify ||
       values.disable_task_polling_sleep
     ),
     upstreamModelDetection:

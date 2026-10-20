@@ -2,6 +2,7 @@ package plugins_test
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -361,7 +362,7 @@ func TestRHReverseLifecycleAndUsage(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, artifacts, 1)
 	assert.Equal(t, "video", artifacts[0].Key)
-	request, err := adaptor.BuildContentRequest(stored, "video", channel.TaskArtifactClientRequest{Method: http.MethodHead, Headers: map[string]string{"Range": "bytes=0-99"}})
+	request, err := adaptor.BuildContentRequest(context.Background(), stored, "video", channel.TaskArtifactClientRequest{Method: http.MethodHead, Headers: map[string]string{"Range": "bytes=0-99"}})
 	require.NoError(t, err)
 	assert.True(t, request.Credentialless)
 	assert.Empty(t, request.Headers)
