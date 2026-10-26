@@ -657,7 +657,6 @@ func waitForTaskPluginProtocolTick(
 		case <-observationContext.Done():
 			return false
 		case <-heartbeatTicker.C:
-			helper.ExtendWriteDeadline(c)
 			if err := writeTaskPluginProtocolHeartbeat(c); err != nil {
 				return false
 			}
@@ -1256,7 +1255,6 @@ func writeTaskPluginProtocolEvent(c *gin.Context, event dto.PluginResponsesStrea
 	if err != nil {
 		return err
 	}
-	helper.ExtendWriteDeadline(c)
 	if _, err = c.Writer.Write([]byte("event: " + event.Type + "\n")); err != nil {
 		return err
 	}

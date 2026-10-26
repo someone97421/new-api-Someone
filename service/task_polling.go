@@ -295,6 +295,7 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 		ChannelBaseUrl:       baseURL,
 		ChannelSetting:       ch.GetSetting(),
 		ChannelOtherSettings: ch.GetOtherSettings(),
+		HeadersOverride:      ch.GetHeaderOverride(),
 	}
 	info.ApiKey = ch.Key
 	adaptor.Init(info)
@@ -472,6 +473,7 @@ func updateVideoTasks(ctx context.Context, platform constant.TaskPlatform, chann
 		ChannelBaseUrl:       cacheGetChannel.GetBaseURL(),
 		ChannelSetting:       cacheGetChannel.GetSetting(),
 		ChannelOtherSettings: cacheGetChannel.GetOtherSettings(),
+		HeadersOverride:      cacheGetChannel.GetHeaderOverride(),
 	}
 	info.ApiKey = cacheGetChannel.Key
 	adaptor.Init(info)
@@ -855,7 +857,8 @@ func unrecognizedPollDetail(reason string, body []byte) string {
 func recordPollFailure(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, fromStatus model.TaskStatus, class string, statusCode int, detail string) error {
 	task.PrivateData.PollFailures++
 	// TASK_POLL_MAX_FAILURES <= 0 disables the consecutive-failure cutoff, matching
-	// TASK_TIMEOUT_MINUTES semantics; the 24h sweep remains the only backstop.
+	// TASK_TIMEOUT_MINUTES semantics; the 72h sweep (TASK_TIMEOUT_MINUTES default
+	// 4320) remains the only backstop.
 	giveUp := constant.TaskPollMaxFailures > 0 && task.PrivateData.PollFailures >= constant.TaskPollMaxFailures
 	if giveUp || class == pollClassUnrecognized || class == pollClassHookError {
 		// The redacted body is intentionally not persisted to Task.Data on these

@@ -282,6 +282,7 @@ func initTaskArtifactAdaptor(task *model.Task) (relaychannel.TaskAdaptor, error)
 			ApiKey:               pluginKey,
 			ChannelSetting:       channelModel.GetSetting(),
 			ChannelOtherSettings: channelModel.GetOtherSettings(),
+			HeadersOverride:      channelModel.GetHeaderOverride(),
 		},
 	})
 	return adaptor, nil
