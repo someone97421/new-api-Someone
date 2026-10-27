@@ -19,9 +19,11 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -322,4 +324,60 @@ func TestStreamKeepAliveCancellation(t *testing.T) {
 	_, err := c.Writer.WriteString("data: done\n\n")
 	require.NoError(t, err)
 	require.True(t, strings.HasSuffix(recorder.Body.String(), "data: done\n\n"))
+}
+
+func TestRelayChannelAttemptReplacesOriginalBodyBeforeRetry(t *testing.T) {
+	previousPrices := ratio_setting.ModelPrice2JSONString()
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"gpt-4o-mini":0.001}`))
+	t.Cleanup(func() { require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(previousPrices)) })
+	service.InitHttpClient()
+	var received []map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if !assert.NoError(t, common.DecodeJson(r.Body, &body)) {
+			return
+		}
+		received = append(received, body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"message":"busy","type":"rate_limit_error"}}`)
+	}))
+	defer upstream.Close()
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	original := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"sensitive"}]}`
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(original))
+	c.Request.Header.Set("Content-Type", "application/json")
+	defer common.CleanupBodyStorage(c)
+	common.SetContextKey(c, constant.ContextKeyOriginalModel, "gpt-4o-mini")
+	common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+	common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, upstream.URL)
+	common.SetContextKey(c, constant.ContextKeyChannelKey, "test-key")
+	common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
+	request, err := helper.GetAndValidateRequest(c, types.RelayFormatOpenAI)
+	require.NoError(t, err)
+	info, err := relaycommon.GenRelayInfo(c, types.RelayFormatOpenAI, request, nil)
+	require.NoError(t, err)
+	events := []string{}
+	info.Billing = &taskSubmissionTestBilling{events: &events}
+	for _, target := range []string{"first", "second"} {
+		common.SetContextKey(c, constant.ContextKeyChannelSetting, dto.ChannelSettings{BodyTextReplacement: &dto.BodyTextReplacement{Enabled: true, Rules: []dto.BodyTextReplacementRule{
+			{From: "sensitive", To: target}, {From: "gpt-4o-mini", To: target + "-model"},
+		}}})
+		c.Set("model_mapping", `{"`+target+`-model":"upstream-`+target+`"}`)
+		apiErr := relayChannelAttempt(c, info, types.RelayFormatOpenAI)
+		require.NotNil(t, apiErr)
+		assert.Equal(t, http.StatusTooManyRequests, apiErr.StatusCode, apiErr.Error())
+		assert.Equal(t, "gpt-4o-mini", info.OriginModelName)
+	}
+	require.Len(t, received, 2)
+	for i, target := range []string{"first", "second"} {
+		assert.Equal(t, "upstream-"+target, received[i]["model"])
+		assert.Equal(t, target, received[i]["messages"].([]any)[0].(map[string]any)["content"])
+	}
+	storage, err := common.GetBodyStorage(c)
+	require.NoError(t, err)
+	body, err := storage.Bytes()
+	require.NoError(t, err)
+	assert.Equal(t, original, string(body))
+	assert.Equal(t, []string{"reserve", "reserve"}, events)
 }

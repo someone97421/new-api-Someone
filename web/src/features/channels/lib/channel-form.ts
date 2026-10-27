@@ -281,6 +281,17 @@ export const channelFormSchema = z
     file_relay_strict: z.enum(['inherit', 'on', 'off']).optional(),
     tls_insecure_skip_verify: z.boolean().optional(),
     pass_through_body_enabled: z.boolean().optional(),
+    body_text_replacement: z
+      .object({
+        enabled: z.boolean(),
+        rules: z.array(
+          z.object({
+            from: z.string().min(1, 'Original text cannot be empty'),
+            to: z.string(),
+          })
+        ),
+      })
+      .optional(),
     responses_websocket_enabled: z.boolean().optional(),
     system_prompt: z.string().optional(),
     system_prompt_override: z.boolean().optional(),
@@ -477,6 +488,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   file_relay_strict: 'inherit',
   tls_insecure_skip_verify: false,
   pass_through_body_enabled: false,
+  body_text_replacement: { enabled: false, rules: [] },
   responses_websocket_enabled: false,
   system_prompt: '',
   system_prompt_override: false,
@@ -526,6 +538,10 @@ export function transformChannelToFormDefaults(
     file_relay_strict: 'inherit' as 'inherit' | 'on' | 'off',
     tls_insecure_skip_verify: false,
     pass_through_body_enabled: false,
+    body_text_replacement: {
+      enabled: false,
+      rules: [] as { from: string; to: string }[],
+    },
     responses_websocket_enabled: false,
     system_prompt: '',
     system_prompt_override: false,
@@ -552,6 +568,12 @@ export function transformChannelToFormDefaults(
         ),
         tls_insecure_skip_verify: parsed.tls_insecure_skip_verify === true,
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
+        body_text_replacement: {
+          enabled: parsed.body_text_replacement?.enabled === true,
+          rules: Array.isArray(parsed.body_text_replacement?.rules)
+            ? parsed.body_text_replacement.rules
+            : [],
+        },
         responses_websocket_enabled:
           parsed.responses_websocket_enabled === true,
         system_prompt: parsed.system_prompt || '',
@@ -675,7 +697,9 @@ export function transformChannelToFormDefaults(
  * Build the setting JSON string from form extra settings
  */
 export function buildSettingJSON(formData: ChannelFormValues): string {
+  const existingSetting = parseOptionalJson(formData.setting)
   const settingObj: Record<string, unknown> = {
+    ...(isJsonObjectValue(existingSetting) ? existingSetting : {}),
     task_plugin_key:
       formData.type === CHANNEL_TYPE_TASK_PLUGIN
         ? formData.task_plugin_key?.trim() || ''
@@ -689,6 +713,14 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
     thinking_to_content: formData.thinking_to_content || false,
     proxy: formData.proxy?.trim() || '',
     pass_through_body_enabled: formData.pass_through_body_enabled === true,
+    body_text_replacement: {
+      ...(isJsonObjectValue(existingSetting) &&
+      isJsonObjectValue(existingSetting.body_text_replacement)
+        ? existingSetting.body_text_replacement
+        : {}),
+      enabled: formData.body_text_replacement?.enabled === true,
+      rules: formData.body_text_replacement?.rules ?? [],
+    },
     responses_websocket_enabled:
       supportsResponsesWebSocket(formData.type) &&
       formData.responses_websocket_enabled === true,
@@ -711,6 +743,9 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
       : normalizeHttp2ConnectionShards(formData.http2_connection_shards)
 
   // Omit defaults so unchanged channels keep equivalent JSON.
+  delete settingObj.http_protocol
+  delete settingObj.http2_connection_shards
+  delete settingObj.tls_insecure_skip_verify
   if (protocol === HTTP_PROTOCOL_HTTP1) {
     settingObj.http_protocol = HTTP_PROTOCOL_HTTP1
   } else if (shards > 1) {

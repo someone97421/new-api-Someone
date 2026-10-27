@@ -351,8 +351,15 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	// reset some fields based on channel meta
 	// 重置某些字段，例如模型名称等
 	if info.Request != nil {
-		info.Request.SetModelName(info.OriginModelName)
+		info.Request.SetModelName(info.ChannelRequestModel())
 	}
+}
+
+func (info *RelayInfo) ChannelRequestModel() string {
+	if info.ChannelMeta == nil {
+		return info.OriginModelName
+	}
+	return info.ChannelSetting.BodyTextReplacement.Replace(info.OriginModelName)
 }
 
 func (info *RelayInfo) ToString() string {

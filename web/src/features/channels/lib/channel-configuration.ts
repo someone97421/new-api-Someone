@@ -60,6 +60,7 @@ const CONFIGURATION_BLOCKS = {
       'force_format',
       'thinking_to_content',
       'pass_through_body_enabled',
+      'body_text_replacement',
       'responses_websocket_enabled',
       'ollama_openai_chat',
       'system_prompt',
@@ -155,6 +156,8 @@ export function getChannelConfigurationState(
     requestProcessing: Boolean(
       (values.type === 1 && values.force_format) ||
       values.thinking_to_content ||
+      values.body_text_replacement?.enabled ||
+      values.body_text_replacement?.rules.length ||
       (values.type !== CHANNEL_TYPE_ADVANCED_CUSTOM &&
         values.pass_through_body_enabled) ||
       (supportsResponsesWebSocket(values.type) &&

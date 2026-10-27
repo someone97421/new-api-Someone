@@ -12,6 +12,7 @@ import (
 )
 
 type ChannelSettings struct {
+	BodyTextReplacement       *BodyTextReplacement    `json:"body_text_replacement,omitempty"`
 	FileRelay                 *ChannelFileRelayPolicy `json:"file_relay,omitempty"`
 	TaskPluginKey             string                  `json:"task_plugin_key,omitempty"`
 	ForceFormat               bool                    `json:"force_format,omitempty"`
@@ -36,6 +37,40 @@ type ChannelSettings struct {
 	// TLSInsecureSkipVerify accepts upstream certificates that fail
 	// verification, such as self-signed ones, for this channel only.
 	TLSInsecureSkipVerify bool `json:"tls_insecure_skip_verify,omitempty"`
+}
+
+type BodyTextReplacement struct {
+	Enabled bool                      `json:"enabled"`
+	Rules   []BodyTextReplacementRule `json:"rules"`
+}
+
+type BodyTextReplacementRule struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+func (p *BodyTextReplacement) Replace(value string) string {
+	if p == nil || !p.Enabled {
+		return value
+	}
+	for _, rule := range p.Rules {
+		if rule.From != "" {
+			value = strings.ReplaceAll(value, rule.From, rule.To)
+		}
+	}
+	return value
+}
+
+func (p *BodyTextReplacement) Validate() error {
+	if p == nil {
+		return nil
+	}
+	for _, rule := range p.Rules {
+		if rule.From == "" {
+			return fmt.Errorf("body_text_replacement: from must not be empty")
+		}
+	}
+	return nil
 }
 
 // ChannelFileRelayPolicy overrides automatic file delivery for a channel.

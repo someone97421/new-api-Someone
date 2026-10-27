@@ -16,6 +16,9 @@
 | 6 | 任务插件 multipart 请求构造与请求头修复 | jsplugin multipart 提交路径 | 保留 fork 文件处理；渠道 Header Override 已采用上游通用实现 |
 | 7 | Responses 跨供应商重试的任务校验与渲染修复 | relay 响应链 | 修复性质，留意上游是否已修 |
 | 8 | Magnific 图片/视频任务插件及素材工具 | `plugins/tasks/magnific/`、`scripts/magnific.py` | 保留双协议适配、供应商模型声明及配套测试；脚本凭据从环境变量读取 |
+| 9 | Any2API 六供应商任务插件 | `plugins/shared/any2api.js`、`plugins/tasks/{rh-reverse,lovart,libtv,xyq,jimeng-reverse,magnific-reverse}/` | 保留共享驱动拼接与独立插件身份；官方即梦、Magnific 不替换 |
+| 10 | 按渠道请求体文字替换 | `common/body_text_replacement.go`、`controller/relay_attempt.go`、task jsplugin 解码、渠道编辑界面 | 每次尝试从原始请求替换，计费前重验；保留模型路由身份 |
+| 11 | 私有图片 artifact 交付 | `controller/plugin_protocol_image.go` | 使用最终成功任务的插件和渠道下载图片，支持 `artifact_key` 转 `b64_json` |
 
 ## 1. 鲸鱼插件（`plugins/tasks/jingyu/`）
 
@@ -112,3 +115,33 @@
 - 计费命令：配置三库矩阵所需的 `TEST_FIXED_MYSQL_DSN`、`TEST_FIXED_POSTGRES_DSN` 及各自独立 `_LOG_DSN` 后，执行 `GOWORK=off go test ./service -count=1 -v -timeout=120s -run '^(TestFixedPriceBillingDatabaseMatrix|TestBillingSessionReserveWalletTopUpDecrementsBalance|TestPreConsumeBillingRejectsSaturatedQuotaBeforeDeduction|TestPreConsumeBillingRejectsNegativeQuotaBeforeDeduction)$'`，通过。覆盖更贵任务渠道的发送前补预扣、余额不足阻止发送及累计预扣全额退款。
 - 前端使用本机 Bun 1.4.3：冻结锁文件安装、`bun run typecheck` 通过；64 个受影响 TS/TSX 文件定向 oxlint 为 0 错误、2 个既有警告。23 个相关测试文件首轮 505/506 用例通过，模型编辑选择器有一次查找失败；单独复跑 `metadata-editing.test.tsx` 的 10 个用例全部通过，未为偶发失败修改业务代码。
 - 仓库声明及 CI 采用上游 Bun 1.4.4；本机下载该版本时直连和配置代理均超时，因此尚未在本机以 1.4.4 重跑前端检查。
+
+## 9. Any2API 六供应商适配
+
+- 插件键：`rh-reverse`、`lovart`、`libtv`、`xyq`、`jimeng-reverse`、`magnific-reverse`。后两项服务 Any2API 工作流，原有 `jimeng` / `magnific` 官方协议插件继续独立存在。
+- 渠道类型选“任务插件”，绑定对应插件，Base URL 可指向供应商独立服务，也可填写 Any2API 的 `/api/hub/suppliers/<供应商键>/native` 前缀，密钥填写 Any2API API Key。
+- 原生入口使用插件前缀，统一入口使用 `/v1/images/generations`、`/v1/images/edits`、`/v1/videos`。共享客户端模型 ID 可配置到多个供应商渠道，上游差异通过渠道模型映射处理；按现有优先级、权重和提交重试规则路由。
+- LibTV、XYQ、逆向即梦和逆向 Magnific 复用共享驱动；`plugins.Source(key)` 返回拼接后的完整单文件源码。不要仅上传这些目录中的声明片段。
+- RH 补充 Nano Banana 2.1、Kling v4 声明；Lovart 接入已核实的 generator 清单及最终 `inputArgs` / `modelParams` 参数覆盖。
+- 四家共享驱动的参考素材使用 multipart 文件，不接收 URL 素材；XYQ/即梦 multipart 没有 extra 扩展字段，遇到不能表达的扩展会明确拒绝，JSON 保留扩展参数。
+- 保留现有能力边界：RH 单成品、样片与转正片限制；LibTV 样片、Lovart 未验证目录、取消/加速等额外操作未接入。提交成功后的任务失败不自动跨供应商改投。
+- 用量由最终请求参数和有效成品数量确定，不推算上游 credits / cost.power。管理员仍需配置渠道模型与插件价格。
+- 私有图片由 `artifact_key` 标记，宿主使用成功任务对应的插件和渠道凭据下载，返回 `b64_json`；下载失败返回交付错误，不重复生成或修改已完成任务的结算。
+
+## 10. 渠道请求体文字替换
+
+- 配置入口：渠道编辑 → 请求与响应 → 请求处理 → 请求体文字替换。配置保存在 `setting.body_text_replacement`，结构为 `{enabled, rules:[{from,to}]}`，不新增数据库列。
+- 默认关闭。按顺序执行区分大小写的字面匹配，不使用正则；`from` 不允许空字符串，不自动裁剪空格，`to` 可以为空。
+- JSON 仅替换字符串值，包括嵌套对象、数组、URL 和模型名；保留字段名、数字、布尔值、null 与成员顺序。multipart 和表单替换文本字段，文件内容、文件名和字段名保持不变。
+- 每次渠道尝试从原始请求重新应用当前渠道规则；普通 HTTP 路径重新解析和验证参数，刷新 token/图片/表达式计费输入，复用同一个扣费会话。任务插件重新解码当前渠道的有效请求，再构建提交请求与提取 usage。
+- 原始模型名保留路由和账单身份，替换后的模型名再执行渠道模型映射。宿主文件引用保持不变；替换后的原任务关联必须仍属于本次已绑定的原任务。
+- 当前范围为普通 HTTP relay 与声明式任务插件提交；不处理 WebSocket 消息帧、请求头、查询参数或插件自行生成的常量。
+
+### 本轮检查状态
+
+- 已完成 Go 格式化与差异检查，插件 JavaScript 语法及定向 lint、前端类型和定向 lint/格式检查、七语言同步。
+- 已获授权并通过：主模块 `GOWORK=off go build -o <scratch>/new-api-provider-check .`；`relaykit/` 内 `GOWORK=off go build ./...`。
+- Go 定向回归通过：`go test ./common -run 'TestBodyTextReplacement'`；`go test ./plugins ./relay/channel/task/jsplugin -run 'TestAny2API|TestLovart|TestTaskAdaptor'`；`go test ./controller -run 'TestServeTaskPluginImageProtocol|TestServeTaskPluginProtocolRendersAfterProviderSwitch'`；普通转发保活/重试与 `TestRelayChannelAttemptReplacesOriginalBodyBeforeRetry`；`service` 中分组计价、补预扣和负数/溢出拒绝用例。均使用 `GOWORK=off`、`-count=1`、`-timeout=120s`。控制器相关持久化夹具使用 SQLite 3.50.4；本轮未修改数据库结构、驱动或 SQL。
+- 前端渠道配置文件首轮 100/101 通过，唯一失败是新增 Base UI Switch 禁用状态断言。改用 `aria-disabled` 后，定向复跑六个替换配置用例全部通过，其余 95 项未重复运行。
+- 运行验证同时修复共享插件 `.async` 语法扫描误判、模型声明大小写冲突、multipart 提示词误解析、Lovart 本地素材下标错位。已覆盖私有图片、远程/本地素材选择及最终供应商下载。
+- 未执行真实供应商请求或收费生成；实际账号权限、供应商可用性与成品质量仍需上线前使用自有账号确认。代码尚未提交或推送。

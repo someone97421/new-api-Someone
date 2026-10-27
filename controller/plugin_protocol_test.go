@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1995,6 +1997,13 @@ func TestServeTaskPluginImageProtocolRendersAfterProviderSwitch(t *testing.T) {
 				assert.Equal(t, "https://cdn.example/fallback.png", url)
 				return "image/png", "QUFB", nil
 			}
+			deps.downloadArtifact = func(_ *gin.Context, task *model.Task, key string) (string, error) {
+				downloads++
+				assert.Equal(t, constant.TaskPlatform(pluginKey), task.Platform)
+				assert.Equal(t, 9, task.ChannelId)
+				assert.Equal(t, "image", key)
+				return "QUFB", nil
+			}
 			serveTaskPluginImageProtocol(c, pinned, deps)
 			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
 			var response map[string]any
@@ -2137,6 +2146,154 @@ export const protocols = {openai_responses:{
 				require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
 				assert.Equal(t, "completed", response.Status)
 				assert.Equal(t, pinned.Model, response.Model)
+			}
+		})
+	}
+}
+
+func TestServeTaskPluginImageProtocolDeliversCredentialedArtifacts(t *testing.T) {
+	task := setupGenericTaskTest(t)
+	allowPrivateTaskMediaTest(t)
+	oldRegistry, oldMemory, oldMaxDownload := pluginruntime.DefaultRegistry, common.MemoryCacheEnabled, constant.MaxFileDownloadMB
+	pluginruntime.DefaultRegistry, common.MemoryCacheEnabled, constant.MaxFileDownloadMB = pluginruntime.NewRegistry(), false, 1
+	t.Cleanup(func() {
+		pluginruntime.DefaultRegistry, common.MemoryCacheEnabled, constant.MaxFileDownloadMB = oldRegistry, oldMemory, oldMaxDownload
+	})
+	source := strings.Replace(imageProtocolTestPlugin,
+		`const data = (task.data && task.data.images || []).map(function(url) { return {url: url}; });`,
+		`const data = task.data.entries;`, 1) + `
+export function listArtifacts(task) { return task.data.artifacts; }
+export function buildContentRequest(ctx) {
+  if (ctx.clientRequest.method !== "GET" || ctx.clientRequest.headers) throw new Error("unexpected client headers");
+  return {url: ctx.baseUrl + ctx.data.contentPath, headers: {Authorization: "Bearer " + ctx.apiKey}};
+}`
+	source = strings.ReplaceAll(source, `"image-bridge"`, `"artifact-provider"`)
+	plugin, err := pluginruntime.DefaultRegistry.RegisterFactory(source, pluginruntime.Options{Key: "artifact-provider"})
+	require.NoError(t, err)
+	pinned := imageProtocolTestEndpoint(t)
+	pinned.Generation = pluginruntime.DefaultRegistry.Generation()
+	selected := pinned
+	selected.Plugin = plugin
+	imageBytes, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name, format, publicURL, artifactType, contentPath string
+		status, requests                                   int
+	}{
+		{name: "默认格式交付私有图片", artifactType: "image", contentPath: "/image", status: http.StatusOK, requests: 1},
+		{name: "url格式仍交付私有图片", format: "url", artifactType: "image", contentPath: "/image", status: http.StatusOK, requests: 1},
+		{name: "b64优先用凭据读取artifact", format: "b64_json", publicURL: "https://cdn.example/public.png", artifactType: "image", contentPath: "/image", status: http.StatusOK, requests: 1},
+		{name: "公开地址移除内部key", format: "url", publicURL: "https://cdn.example/public.png", artifactType: "image", contentPath: "/image", status: http.StatusOK},
+		{name: "拒绝非图片artifact", artifactType: "video", contentPath: "/image", status: http.StatusBadGateway},
+		{name: "拒绝缺失artifact", contentPath: "/image", status: http.StatusBadGateway},
+		{name: "公开地址也验证artifact类型", format: "url", publicURL: "https://cdn.example/public.png", artifactType: "video", contentPath: "/image", status: http.StatusBadGateway},
+		{name: "上游鉴权失败不重新生成", artifactType: "image", contentPath: "/unauthorized", status: http.StatusBadGateway, requests: 1},
+		{name: "拒绝伪装图片内容", artifactType: "image", contentPath: "/not-image", status: http.StatusBadGateway, requests: 1},
+		{name: "拒绝声明超大图片", artifactType: "image", contentPath: "/large-length", status: http.StatusBadGateway, requests: 1},
+		{name: "拒绝分块超大图片", artifactType: "image", contentPath: "/large-chunked", status: http.StatusBadGateway, requests: 1},
+		{name: "同源重定向保留凭据", artifactType: "image", contentPath: "/redirect", status: http.StatusOK, requests: 2},
+		{name: "跨源重定向禁止发送凭据", artifactType: "image", contentPath: "/cross-origin", status: http.StatusBadGateway, requests: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests, leakedRequests atomic.Int32
+			untrusted := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				leakedRequests.Add(1)
+			}))
+			defer untrusted.Close()
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				assert.Equal(t, "Bearer artifact-channel-key", r.Header.Get("Authorization"))
+				assert.Empty(t, r.Header.Get("Range"))
+				assert.Empty(t, r.Header.Get("If-None-Match"))
+				if r.URL.Path == "/redirect" {
+					http.Redirect(w, r, "/image", http.StatusFound)
+					return
+				}
+				if r.URL.Path == "/cross-origin" {
+					http.Redirect(w, r, untrusted.URL+"/image", http.StatusFound)
+					return
+				}
+				if r.URL.Path == "/unauthorized" {
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = io.WriteString(w, "artifact-channel-key must never reach the client")
+					return
+				}
+				w.Header().Set("Content-Type", "image/png")
+				if r.URL.Path == "/not-image" {
+					_, _ = io.WriteString(w, `{"error":"not an image"}`)
+					return
+				}
+				if r.URL.Path == "/large-length" {
+					w.Header().Set("Content-Length", strconv.Itoa(2<<20))
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+				if r.URL.Path == "/large-chunked" {
+					w.(http.Flusher).Flush()
+					_, _ = w.Write(imageBytes)
+					_, _ = io.WriteString(w, strings.Repeat("x", 1<<20))
+					return
+				}
+				_, _ = w.Write(imageBytes)
+			}))
+			defer upstream.Close()
+			channel := &model.Channel{Id: task.ChannelId, Name: "artifact", Type: constant.ChannelTypeTaskPlugin, Key: "artifact-channel-key", BaseURL: &upstream.URL, Status: common.ChannelStatusEnabled}
+			channel.SetSetting(kitdto.ChannelSettings{TaskPluginKey: "artifact-provider"})
+			require.NoError(t, model.DB.Save(channel).Error)
+			c, recorder := newImageProtocolTestContext(tc.format)
+			c.Request.Header.Set("Range", "bytes=0-1")
+			c.Request.Header.Set("If-None-Match", "stale")
+			deps := pluginProtocolTestDeps()
+			submissions := 0
+			deps.submit = func(c *gin.Context, info *relaycommon.RelayInfo) (*taskSubmissionOutcome, *dto.TaskError) {
+				submissions++
+				c.Set(pluginruntime.ContextKeyPinnedEndpoint, selected)
+				task.Platform = "artifact-provider"
+				task.PrivateData.Execution = &model.TaskExecutionSnapshot{TaskPlugin: &model.TaskPluginSnapshot{Key: "artifact-provider", Version: "1.0.0"}}
+				task.PrivateData.ResultDiscarded = true
+				entry := map[string]any{"artifact_key": "image-0", "revised_prompt": "a cat"}
+				if tc.publicURL != "" {
+					entry["url"], entry["b64_json"] = tc.publicURL, "replace-existing-base64"
+				}
+				artifacts := []any{}
+				if tc.artifactType != "" {
+					artifacts = append(artifacts, map[string]any{"key": "image-0", "type": tc.artifactType})
+				}
+				task.SetData(map[string]any{"entries": []any{entry}, "artifacts": artifacts, "contentPath": tc.contentPath})
+				return &taskSubmissionOutcome{Task: task, RelayInfo: info}, nil
+			}
+			deps.downloadImage = func(string) (string, string, error) {
+				t.Error("artifact读取不应退回无凭据的URL下载")
+				return "", "", errors.New("unexpected public URL download")
+			}
+			serveTaskPluginImageProtocol(c, pinned, deps)
+			require.Equal(t, tc.status, recorder.Code, recorder.Body.String())
+			assert.EqualValues(t, tc.requests, requests.Load())
+			assert.Zero(t, leakedRequests.Load())
+			assert.Equal(t, 1, submissions)
+			assert.Equal(t, model.TaskStatus(model.TaskStatusSuccess), task.Status)
+			assert.True(t, task.PrivateData.ResultDiscarded)
+			assert.NotContains(t, recorder.Body.String(), "artifact_key")
+			assert.NotContains(t, recorder.Body.String(), "artifact-channel-key")
+			if tc.status != http.StatusOK {
+				assert.Contains(t, recorder.Body.String(), "image_download_failed")
+				assert.Contains(t, recorder.Body.String(), "after generation completed")
+				return
+			}
+			var response map[string]any
+			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+			entries, ok := response["data"].([]any)
+			require.True(t, ok)
+			require.Len(t, entries, 1)
+			entry := entries[0].(map[string]any)
+			assert.Equal(t, "a cat", entry["revised_prompt"])
+			if tc.requests > 0 {
+				assert.Equal(t, base64.StdEncoding.EncodeToString(imageBytes), entry["b64_json"])
+			}
+			if tc.publicURL != "" {
+				assert.Equal(t, tc.publicURL, entry["url"])
+			} else {
+				assert.NotContains(t, entry, "url")
 			}
 		})
 	}

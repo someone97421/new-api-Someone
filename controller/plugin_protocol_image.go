@@ -1,10 +1,17 @@
 package controller
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
+	"mime"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,6 +22,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relay"
+	relaychannel "github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -154,6 +162,9 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 		respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
 		return
 	}
+	response = maps.Clone(response)
+	data = slices.Clone(data)
+	response["data"] = data
 	if _, present := response["created"]; !present {
 		createdAt := task.CreatedAt
 		if createdAt == 0 {
@@ -161,25 +172,48 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 		}
 		response["created"] = createdAt
 	}
-	// response_format is host-owned: the plugin renders upstream URLs and the
-	// host inlines each image when the client asked for Base64.
-	if taskPluginImageResponseFormat(protocolRequest) == "b64_json" {
-		for _, entry := range data {
-			item, isObject := entry.(map[string]any)
-			if !isObject {
-				continue
-			}
-			url, _ := item["url"].(string)
-			if existing, _ := item["b64_json"].(string); strings.TrimSpace(url) == "" || existing != "" {
-				continue
-			}
-			_, encoded, downloadErr := deps.downloadImage(url)
-			if downloadErr != nil {
-				logger.LogWarn(c, common.LogText("task protocol image download failed; returning the upstream URL instead of b64_json: %s", common.MaskSensitiveInfo(downloadErr.Error(), common.UpstreamAddresses(c)...)))
-				continue
-			}
-			item["b64_json"] = encoded
+	for index, entry := range data {
+		item, isObject := entry.(map[string]any)
+		if !isObject {
+			continue
 		}
+		item = maps.Clone(item)
+		data[index] = item
+		artifactKey, hasArtifact := item["artifact_key"]
+		delete(item, "artifact_key")
+		imageURL, _ := item["url"].(string)
+		if hasArtifact {
+			key, validKey := artifactKey.(string)
+			if !validKey || !taskArtifactKeyPattern.MatchString(key) {
+				respondPluginProtocolError(c, http.StatusBadGateway, "image_download_failed", "Image artifact is invalid after generation completed")
+				return
+			}
+			if taskPluginImageResponseFormat(protocolRequest) == "b64_json" || strings.TrimSpace(imageURL) == "" {
+				encoded, downloadErr := deps.downloadArtifact(c, task, key)
+				if downloadErr != nil {
+					logger.LogWarn(c, common.LogText("task protocol image artifact download failed after generation completed"))
+					respondPluginProtocolError(c, http.StatusBadGateway, "image_download_failed", "Image download failed after generation completed")
+					return
+				}
+				item["b64_json"] = encoded
+			} else if _, artifactErr := taskPluginImageArtifactProvider(task, key); artifactErr != nil {
+				respondPluginProtocolError(c, http.StatusBadGateway, "image_download_failed", "Image artifact is invalid after generation completed")
+				return
+			}
+			continue
+		}
+		if taskPluginImageResponseFormat(protocolRequest) != "b64_json" {
+			continue
+		}
+		if existing, _ := item["b64_json"].(string); strings.TrimSpace(imageURL) == "" || existing != "" {
+			continue
+		}
+		_, encoded, downloadErr := deps.downloadImage(imageURL)
+		if downloadErr != nil {
+			logger.LogWarn(c, common.LogText("task protocol image download failed; returning the upstream URL instead of b64_json: %s", common.MaskSensitiveInfo(downloadErr.Error(), common.UpstreamAddresses(c)...)))
+			continue
+		}
+		item["b64_json"] = encoded
 	}
 	body, err := common.Marshal(response)
 	if err == nil {
@@ -194,6 +228,127 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 		return
 	}
 	c.Data(http.StatusOK, "application/json", body)
+}
+
+func taskPluginImageArtifactProvider(task *model.Task, artifactKey string) (relaychannel.TaskContentRequestProvider, error) {
+	adaptor, err := initTaskArtifactAdaptor(task)
+	if err != nil {
+		return nil, err
+	}
+	artifactsProvider, ok := adaptor.(relaychannel.TaskArtifactProvider)
+	if !ok {
+		return nil, errors.New("image artifact listing is unavailable")
+	}
+	artifacts, err := artifactsProvider.ListArtifacts(task)
+	if err != nil {
+		return nil, err
+	}
+	artifacts, err = validateProjectedTaskArtifacts(artifacts)
+	if err != nil {
+		return nil, err
+	}
+	found := false
+	for _, artifact := range artifacts {
+		if artifact.Key == artifactKey && artifact.Type == "image" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, errors.New("image artifact not found")
+	}
+	contentProvider, ok := adaptor.(relaychannel.TaskContentRequestProvider)
+	if !ok {
+		return nil, errors.New("image artifact content is unavailable")
+	}
+	return contentProvider, nil
+}
+
+// downloadTaskPluginImageArtifact 通过成功任务的供应商读取素材，仅在响应内编码图片。
+func downloadTaskPluginImageArtifact(c *gin.Context, task *model.Task, artifactKey string) (string, error) {
+	contentProvider, err := taskPluginImageArtifactProvider(task, artifactKey)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), taskMediaResponseHeaderTimeout)
+	defer cancel()
+	descriptor, err := contentProvider.BuildContentRequest(ctx, task, artifactKey, relaychannel.TaskArtifactClientRequest{Method: http.MethodGet})
+	if err != nil {
+		return "", err
+	}
+	if descriptor == nil {
+		return "", errors.New("image artifact content request is unavailable")
+	}
+	rawURL := strings.TrimSpace(descriptor.URL)
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil || len(rawURL) > 64<<10 || parsedURL == nil ||
+		(parsedURL.Scheme != "http" && parsedURL.Scheme != "https") ||
+		parsedURL.Host == "" || parsedURL.User != nil || parsedURL.Fragment != "" ||
+		isTaskMediaFallbackLoop(rawURL, task.TaskID) || isSelfTaskMediaURL(c, parsedURL) {
+		return "", errTaskMediaRequestRejected
+	}
+	method := strings.ToUpper(strings.TrimSpace(descriptor.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
+	if (method != http.MethodGet && method != http.MethodPost) || len(descriptor.Body) > 1<<20 ||
+		(descriptor.Credentialless && (method != http.MethodGet || descriptor.Body != nil || len(descriptor.Headers) != 0)) {
+		return "", errTaskMediaRequestRejected
+	}
+	channel, err := model.CacheGetChannel(task.ChannelId)
+	if err != nil || channel == nil {
+		return "", errors.New("image artifact channel is unavailable")
+	}
+	setting := channel.GetSetting()
+	proxy := strings.TrimSpace(setting.Proxy)
+	if err := validateTaskMediaURL(rawURL, proxy); err != nil {
+		return "", err
+	}
+	client := service.GetSSRFProtectedHTTPClient()
+	if proxy != "" {
+		client, err = service.GetHttpClientWithProxySettings(proxy, setting)
+		if err != nil {
+			return "", err
+		}
+	}
+	if client == nil {
+		client = http.DefaultClient
+	}
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, bytes.NewReader(descriptor.Body))
+	if err != nil {
+		return "", err
+	}
+	if err := applyTaskMediaRequestHeaders(req.Header, descriptor.Headers); err != nil {
+		return "", err
+	}
+	client = taskMediaRedirectClient(client, proxy, c, nil, descriptor.Credentialless)
+	resp, err := doTaskMediaRequest(client, req, taskMediaResponseHeaderTimeout)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("image artifact upstream returned HTTP %d", resp.StatusCode)
+	}
+	contentType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil || (!strings.HasPrefix(contentType, "image/") && contentType != "application/octet-stream") {
+		return "", errors.New("image artifact returned invalid content type")
+	}
+	maxBytes := int64(constant.MaxFileDownloadMB) * 1024 * 1024
+	if resp.ContentLength > maxBytes {
+		return "", errors.New("image artifact exceeds download size limit")
+	}
+	image, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if len(image) == 0 || int64(len(image)) > maxBytes {
+		return "", errors.New("image artifact is empty or exceeds download size limit")
+	}
+	if !strings.HasPrefix(http.DetectContentType(image), "image/") {
+		return "", errors.New("image artifact returned non-image content")
+	}
+	return base64.StdEncoding.EncodeToString(image), nil
 }
 
 // waitTaskPluginImageTask polls an asynchronous image task inside the client

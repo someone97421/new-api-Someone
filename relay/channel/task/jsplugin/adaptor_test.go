@@ -2850,3 +2850,49 @@ export function buildResubmitRequest(ctx, failure) {
 	assert.Equal(t, 23, outcome.Immediate.TotalTokens)
 	assert.Contains(t, string(outcome.PluginState), `"attempts":1`)
 }
+
+func TestTaskAdaptorBodyTextReplacementAcrossChannels(t *testing.T) {
+	source := `
+export const meta = {apiVersion:1,key:"replace-task",name:"Replace Task",version:"1.0.0",author:{name:"Test"},models:["old-model"],fetchMode:"per_task",requiredCapabilities:["json-order@1"],protocols:["openai_image"],usageSchema:{image_count:{type:"number",unit:"count"}}};
+export const protocols = {openai_image:{decodeRequest(ctx){return {kind:"submit",model:ctx.model,requestBody:ctx.body.value}},render(){return {data:[]}}}};
+export function buildSubmitRequest(ctx){const b = utils.json.clone(ctx.requestBody); b.model = ctx.upstreamModel; return {url:ctx.baseUrl+"/submit",body:b}}
+export function extractUsage(ctx){return {image_count:Number(ctx.requestBody.count)}}
+export function parseSubmitResponse(){return {taskId:"one"}}
+export function buildQueryRequest(){return {}}
+export function parseTaskResult(){return {status:"SUCCESS"}}
+`
+	plugin, err := pluginruntime.NewRegistry().Register(source, pluginruntime.Options{})
+	require.NoError(t, err)
+	raw := `{"model":"old-model","prompt":"old","count":"one","extra":{"z":"old","a":false}}`
+	var value any
+	require.NoError(t, common.Unmarshal([]byte(raw), &value))
+	protocol := pluginruntime.ProtocolRequestContext{
+		RouteRequestContext: pluginruntime.RouteRequestContext{Body: map[string]any{"kind": "json", "value": value}, BodyText: json.RawMessage(raw)},
+		Protocol:            "openai_image", Model: "old-model",
+	}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	c.Set(pluginruntime.ContextKeyPinnedEndpoint, pluginruntime.PinnedEndpoint{Plugin: plugin, Protocol: "openai_image", Model: "old-model"})
+	c.Set(pluginruntime.ContextKeyProtocolRequest, protocol)
+	for _, target := range []string{"first", "second"} {
+		info := &relaycommon.RelayInfo{OriginModelName: "old-model", TaskRelayInfo: &relaycommon.TaskRelayInfo{}, ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelBaseUrl: "https://provider.example", ChannelSetting: dto.ChannelSettings{BodyTextReplacement: &dto.BodyTextReplacement{Enabled: true, Rules: []dto.BodyTextReplacementRule{{From: "old", To: target}, {From: "one", To: "2"}}}},
+		}}
+		c.Set("model_mapping", `{"`+target+`-model":"upstream-model"}`)
+		require.NoError(t, helper.ModelMappedHelper(c, info, nil))
+		adaptor := New(plugin)
+		adaptor.Init(info)
+		require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
+		body, err := adaptor.BuildRequestBody(c, info)
+		require.NoError(t, err)
+		wire, err := io.ReadAll(body)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"model":"upstream-model","prompt":"`+target+`","count":"2","extra":{"z":"`+target+`","a":false}}`, string(wire))
+		facts, err := adaptor.ExtractUsageFactsValidated(c, info)
+		require.NoError(t, err)
+		encoded, err := common.Marshal(facts)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"image_count":2}`, string(encoded))
+		assert.Equal(t, "old-model", info.OriginModelName)
+	}
+}

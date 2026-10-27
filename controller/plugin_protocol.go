@@ -48,6 +48,7 @@ type pluginProtocolBridgeDeps struct {
 	imagePollInterval time.Duration
 	pollTask          func(context.Context, *model.Task) error
 	downloadImage     func(url string) (mimeType string, base64Data string, err error)
+	downloadArtifact  func(*gin.Context, *model.Task, string) (string, error)
 }
 
 // taskPluginImagePollInterval paces the in-request polling of asynchronous
@@ -92,6 +93,7 @@ func defaultPluginProtocolBridgeDeps() pluginProtocolBridgeDeps {
 		imagePollInterval:  taskPluginImagePollInterval,
 		pollTask:           pollTaskPluginImageTask,
 		downloadImage:      service.GetImageFromUrl,
+		downloadArtifact:   downloadTaskPluginImageArtifact,
 	}
 }
 
@@ -150,6 +152,9 @@ func (d pluginProtocolBridgeDeps) withDefaults() pluginProtocolBridgeDeps {
 	}
 	if d.downloadImage == nil {
 		d.downloadImage = defaults.downloadImage
+	}
+	if d.downloadArtifact == nil {
+		d.downloadArtifact = defaults.downloadArtifact
 	}
 	return d
 }

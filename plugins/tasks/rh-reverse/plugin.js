@@ -31,6 +31,9 @@ const IMAGE_MODELS = [
   "nano-banana-pro-official",
   "nano-banana-pro-official-edit",
   "nano-banana-pro-official-text",
+  "nano-banana2-1",
+  "nano-banana2-1-text",
+  "nano-banana2-1-edit",
   "nano-banana2-lite-low-cost",
   "nano-banana2-lite-low-cost-edit",
   "nano-banana2-lite-low-cost-text",
@@ -60,7 +63,7 @@ const IMAGE_MODELS = [
   "seedream5-lite-text",
   "seedream5-pro",
   "seedream5-pro-edit",
-  "seedream5-pro-text"
+  "seedream5-pro-text",
 ];
 
 const VIDEO_MODELS = [
@@ -79,6 +82,15 @@ const VIDEO_MODELS = [
   "happyhorse-1-1-image",
   "happyhorse-1-1-reference",
   "happyhorse-1-1-text",
+  "kling-v4",
+  "kling-v4-text",
+  "kling-v4-image",
+  "kling-v4-reference",
+  "kling-v4-canvas",
+  "kling-v4-canvas-text",
+  "kling-v4-canvas-start",
+  "kling-v4-canvas-start-end",
+  "kling-v4-canvas-reference",
   "kling-o1",
   "kling-o1-first-last",
   "kling-o1-image",
@@ -153,17 +165,21 @@ const VIDEO_MODELS = [
   "wan3-0",
   "wan3-0-canvas",
   "wan3-0-canvas-reference",
-  "wan3-0-canvas-text"
+  "wan3-0-canvas-text",
 ];
 
 // 别名只统一客户端名称，不改变供应商模型的能力；管理员可用渠道映射覆盖。
 const IMAGE_ALIASES = {
   "gpt-image-2": "gpt-image-2-official",
+  "gpt-image-2.5-flare": "gpt-image-2-5-flare",
+  "seedream-5.0-pro": "seedream5-pro",
   "gpt-image-2.5-sunburst": "gpt-image-2-5-sunburst",
   "nano-banana-pro": "nano-banana-pro-official",
   "nano-banana-2": "nano-banana2-official",
+  "nano-banana-2.1": "nano-banana2-1",
 };
 const VIDEO_ALIASES = {
+  "kling-4.0": "kling-v4",
   "doubao-seedance-2-0-260128": "seedance2",
   "doubao-seedance-2-0-fast-260128": "seedance2-fast",
   "grok-imagine-video": "grok-imagine-1-5-low-cost",
@@ -198,11 +214,42 @@ export const meta = {
   ],
   // RH-Reverse 未提供可核验的统一秒数/积分消耗字段；按单个成品计费，不猜测时长或上游价格。
   usageSchema: {
-    image_count: { type: "number", unit: "count", unitLabel: { en: "image", zh: "张" }, description: { en: "Image generation unit price", zh: "图片生成单价" } },
+    image_count: {
+      type: "number",
+      unit: "count",
+      unitLabel: { en: "image", zh: "张" },
+      description: {
+        en: "Image generation unit price",
+        zh: "图片生成单价",
+        "zh-TW": "圖片生成單價",
+        fr: "Prix unitaire de génération d’image",
+        ru: "Цена генерации изображения",
+        ja: "画像生成単価",
+        vi: "Đơn giá tạo ảnh",
+      },
+    },
   },
-  usageProfiles: [{ models: VIDEO_IDS, schema: {
-    video_count: { type: "number", unit: "count", unitLabel: { en: "video", zh: "个" }, description: { en: "Video generation unit price", zh: "视频生成单价" } },
-  } }],
+  usageProfiles: [
+    {
+      models: VIDEO_IDS,
+      schema: {
+        video_count: {
+          type: "number",
+          unit: "count",
+          unitLabel: { en: "video", zh: "个" },
+          description: {
+            en: "Video generation unit price",
+            zh: "视频生成单价",
+            "zh-TW": "影片生成單價",
+            fr: "Prix unitaire de génération de vidéo",
+            ru: "Цена генерации видео",
+            ja: "動画生成単価",
+            vi: "Đơn giá tạo video",
+          },
+        },
+      },
+    },
+  ],
 };
 
 function text(value) {
@@ -287,7 +334,7 @@ function decodeTask(ctx, media) {
       if (values.length !== 1) throw new Error(key + " 只能提供一次");
       const value = values[0];
       if (["n", "duration", "seconds", "width", "height", "generateNum", "task_count", "batch_size"].includes(key)) req[key] = Number(value);
-      else if (key === "modelParams" || value === "true" || value === "false" || /^[\[{]/.test(value.trim())) req[key] = JSON.parse(value);
+      else if (["modelParams", "metadata", "stream", "async", "enhance", "audio", "draft"].includes(key)) req[key] = JSON.parse(value);
       else req[key] = value;
     }
     for (const file of body.files || []) {
@@ -307,8 +354,14 @@ function decodeTask(ctx, media) {
     // OpenAI 的 model 是唯一模型选择来源，不能让扩展字段绕过渠道映射。
     delete req.modelKey;
     delete req.modelFamily;
-    for (const pair of [["aspect_ratio", "aspectRatio"], ["output_format", "outputFormat"], ["generate_audio", "generateAudio"], ["seconds", "duration"]]) {
-      const source = pair[0], target = pair[1];
+    for (const pair of [
+      ["aspect_ratio", "aspectRatio"],
+      ["output_format", "outputFormat"],
+      ["generate_audio", "generateAudio"],
+      ["seconds", "duration"],
+    ]) {
+      const source = pair[0],
+        target = pair[1];
       if (req[source] === undefined) continue;
       let value = req[source];
       if (source === "seconds" && typeof value === "string" && /^-?\d+$/.test(value)) value = Number(value);
@@ -324,15 +377,21 @@ function decodeTask(ctx, media) {
     if (req.size !== undefined && req.size !== "auto") {
       const match = /^(\d+)x(\d+)$/.exec(text(req.size));
       if (!match) throw new Error("size 必须是 WIDTHxHEIGHT 或 auto");
-      const width = Number(match[1]), height = Number(match[2]);
+      const width = Number(match[1]),
+        height = Number(match[2]);
       if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) throw new Error("size 必须包含正整数宽高");
-      let a = width, b = height;
-      while (b) { const remainder = a % b; a = b; b = remainder; }
+      let a = width,
+        b = height;
+      while (b) {
+        const remainder = a % b;
+        a = b;
+        b = remainder;
+      }
       const ratio = width / a + ":" + height / a;
       if (media === "image") {
         // 大多数图片模型只接受分辨率档位和比例，不支持直接像素尺寸。
         // 标准尺寸转换为对应档位；其他尺寸交由支持自定义尺寸的上游模型校验。
-        const tiers = {1024: "1k", 2048: "2k", 4096: "4k"};
+        const tiers = { 1024: "1k", 2048: "2k", 4096: "4k" };
         const tier = tiers[Math.max(width, height)] || tiers[Math.min(width, height)];
         const resolution = tier || req.size;
         if (req.resolution !== undefined && req.resolution !== resolution) throw new Error("size 与 resolution 必须一致");
@@ -341,7 +400,7 @@ function decodeTask(ctx, media) {
         req.aspectRatio = ratio;
       } else {
         const edge = Math.min(width, height);
-        const resolution = ({480: "480p", 720: "720p", 1080: "1080p", 2160: "4k"})[edge];
+        const resolution = { 480: "480p", 720: "720p", 1080: "1080p", 2160: "4k" }[edge];
         if (!resolution) throw new Error("该 size 无法转换为 RH-Reverse 视频分辨率，请使用 resolution 和 aspectRatio");
         if (req.aspectRatio !== undefined && req.aspectRatio !== ratio) throw new Error("size 与 aspectRatio 必须一致");
         if (req.resolution !== undefined && req.resolution !== resolution) throw new Error("size 与 resolution 必须一致");
@@ -398,17 +457,28 @@ export function buildQueryRequest(ctx) {
   return { url: taskPath(ctx) + "/" + encodeURIComponent(ctx.taskId), method: "GET", headers: authHeaders(ctx) };
 }
 
+function outputURL(value) {
+  const url = text(value);
+  return /^https?:\/\/[^\s]+$/i.test(url) || /^\/(?!\/)[^\s]+$/.test(url);
+}
+
 export function parseTaskResult(ctx, body) {
   if (!object(body)) throw new Error("RH-Reverse 任务响应必须是 JSON 对象");
   const states = { queued: "QUEUED", running: "IN_PROGRESS", success: "SUCCESS", failed: "FAILURE" };
   let status = states[body.status] || "UNKNOWN";
   let reason = text(body.error);
   const url = text(body.outputUrl);
-  if (status === "SUCCESS" && (!/^https?:\/\/[^\s]+$/i.test(url) || (body.draftResults || []).length)) {
+  if (status === "SUCCESS" && (!outputURL(url) || (body.draftResults || []).length)) {
     status = "FAILURE";
     reason = "RH-Reverse 未返回可用的成品 URL";
   }
-  return { taskId: ctx.taskId || body.id, status: status, progress: status === "SUCCESS" ? "100%" : "0%", reason: reason, url: status === "SUCCESS" ? url : "" };
+  return {
+    taskId: ctx.taskId || body.id,
+    status: status,
+    progress: status === "SUCCESS" ? "100%" : "0%",
+    reason: reason,
+    url: status === "SUCCESS" ? url : "",
+  };
 }
 
 export function extractUsage(ctx) {
@@ -422,11 +492,14 @@ export function extractUsageOnComplete(ctx, result, body) {
 }
 
 export const native = {
-  createTask: function (ctx) { return decodeTask(ctx, ""); },
+  createTask: function (ctx) {
+    return decodeTask(ctx, "");
+  },
   taskView: function (ctx, task) {
     const data = utils.json.clone(task.data || {});
     data.id = task.task_id;
-    data.status = ({ NOT_START: "queued", SUBMITTED: "queued", QUEUED: "queued", IN_PROGRESS: "running", SUCCESS: "success", FAILURE: "failed" })[task.status] || "unknown";
+    data.status =
+      { NOT_START: "queued", SUBMITTED: "queued", QUEUED: "queued", IN_PROGRESS: "running", SUCCESS: "success", FAILURE: "failed" }[task.status] || "unknown";
     if (task.fail_reason) data.error = task.fail_reason;
     // 保留 TaskOut 外形，但不向下游暴露后端本地路径、调试记录和私有任务标识。
     for (const key of ["runninghubTaskId", "sourceTaskId", "inputPath", "inputPaths", "outputPath", "rawRecord"]) data[key] = null;
@@ -436,11 +509,19 @@ export const native = {
 
 export const protocols = {
   openai_image: {
-    decodeRequest: function (ctx) { return decodeTask(ctx, "image"); },
-    render: function (ctx, task) { return { data: [{ url: task.data.outputUrl }] }; },
+    decodeRequest: function (ctx) {
+      return decodeTask(ctx, "image");
+    },
+    render: function (ctx, task) {
+      const item = { artifact_key: "image" };
+      if (/^https?:\/\//i.test(text(task.data.outputUrl))) item.url = task.data.outputUrl;
+      return { data: [item] };
+    },
   },
   openai_video: {
-    decodeRequest: function (ctx) { return decodeTask(ctx, "video"); },
+    decodeRequest: function (ctx) {
+      return decodeTask(ctx, "video");
+    },
     render: function (ctx, task) {
       const data = task.data || {};
       const result = {};
@@ -453,14 +534,21 @@ export const protocols = {
 };
 
 export function listArtifacts(task) {
-  if (task.status !== "SUCCESS" || !text((task.data || {}).outputUrl)) return [];
+  if (task.status !== "SUCCESS" || !outputURL((task.data || {}).outputUrl)) return [];
   const type = isVideo(task) ? "video" : "image";
   return [{ key: type, type: type }];
 }
 
 export function buildContentRequest(ctx) {
   const type = isVideo(ctx) ? "video" : "image";
-  if (ctx.artifactKey !== type || !text((ctx.data || {}).outputUrl)) throw new Error("artifact_not_found");
-  // 成品来自上游 CDN；宿主以 credentialless 模式处理 Range，不能携带 RH-Reverse API Key。
-  return { url: ctx.data.outputUrl, method: ctx.clientRequest.method, credentialless: true };
+  const url = (ctx.data || {}).outputUrl;
+  if (ctx.artifactKey !== type || !outputURL(url)) throw new Error("artifact_not_found");
+  if (/^https?:\/\//i.test(url)) return { url: url, method: ctx.clientRequest.method, credentialless: true };
+  if (ctx.upstream && ctx.upstream.kind === "new_api")
+    return {
+      url: ctx.baseUrl.replace(/\/+$/, "") + "/v1/tasks/" + encodeURIComponent(ctx.upstreamTaskId) + "/artifacts/" + type + "/content",
+      method: ctx.clientRequest.method,
+      headers: authHeaders(ctx),
+    };
+  return { url: ctx.baseUrl.replace(/\/+$/, "") + url, method: ctx.clientRequest.method, headers: authHeaders(ctx) };
 }

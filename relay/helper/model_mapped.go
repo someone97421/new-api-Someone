@@ -15,6 +15,8 @@ func ModelMappedHelper(c *gin.Context, info *relaycommon.RelayInfo, request dto.
 	if info.ChannelMeta == nil {
 		info.ChannelMeta = &relaycommon.ChannelMeta{}
 	}
+	info.UpstreamModelName = info.ChannelRequestModel()
+	info.IsModelMapped = info.UpstreamModelName != info.OriginModelName
 
 	// map model name
 	modelMapping := c.GetString("model_mapping")
@@ -26,7 +28,7 @@ func ModelMappedHelper(c *gin.Context, info *relaycommon.RelayInfo, request dto.
 		}
 
 		// 支持链式模型重定向，最终使用链尾的模型
-		currentModel := info.OriginModelName
+		currentModel := info.ChannelRequestModel()
 		visitedModels := map[string]bool{
 			currentModel: true,
 		}

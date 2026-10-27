@@ -125,35 +125,8 @@ func New(plugin *pluginruntime.LoadedPlugin) *TaskAdaptor { return &TaskAdaptor{
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo)   { a.info = info }
 
 func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskError {
-	if pinnedValue, exists := c.Get(pluginruntime.ContextKeyPinnedEndpoint); exists {
-		if pinned, ok := pinnedValue.(pluginruntime.PinnedEndpoint); ok && pinned.Plugin == a.plugin {
-			if protocolValue, present := c.Get(pluginruntime.ContextKeyProtocolRequest); present {
-				if protocolContext, valid := protocolValue.(pluginruntime.ProtocolRequestContext); valid {
-					resolvedValue, requestBodyText, callErr := a.plugin.Engine.CallPathWithMemberJSON(
-						context.WithoutCancel(c.Request.Context()), 0, a.plugin.Meta.JSONTextMember("requestBody"),
-						"protocols", []string{pinned.Protocol, "decodeRequest"}, protocolContext.JSValueFor(a.plugin.Meta),
-					)
-					resolved, resolvedOK := resolvedValue.(map[string]any)
-					resolvedModel, modelOK := resolved["model"].(string)
-					if callErr != nil || !resolvedOK || !modelOK || resolvedModel != pinned.Model {
-						return service.TaskErrorWrapperLocal(fmt.Errorf("final task plugin decoder rejected the pinned model"), "plugin_request_invalid", http.StatusBadRequest)
-					}
-					if _, forbidden := resolved["renderer"]; forbidden {
-						return service.TaskErrorWrapperLocal(fmt.Errorf("decoder must not return renderer"), "plugin_request_invalid", http.StatusBadRequest)
-					}
-					if body, present := resolved["requestBody"]; present {
-						c.Set("task_request", body)
-					}
-					if requestBodyText != nil {
-						c.Set(pluginruntime.ContextKeyRequestBodyText, requestBodyText)
-					}
-					if action, valid := resolved["action"].(string); valid && strings.TrimSpace(action) != "" {
-						c.Set("task_action", action)
-						info.Action = action
-					}
-				}
-			}
-		}
+	if err := a.decodeChannelRequest(c, info); err != nil {
+		return service.TaskErrorWrapperLocal(err, "plugin_request_invalid", http.StatusBadRequest)
 	}
 	if _, exists := c.Get("task_request"); !exists {
 		if taskErr := relaycommon.ValidateBasicTaskRequest(c, info, "image_to_video"); taskErr != nil {

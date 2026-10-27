@@ -206,6 +206,7 @@ import {
   nextTaskPluginBaseUrl,
 } from '../../lib/task-plugin-base-url'
 import type { Channel } from '../../types'
+import { BodyTextReplacementSetting } from '../body-text-replacement-setting'
 import { ChannelPluginExtensions } from '../channel-plugin-extensions'
 import { ChannelQuickOptions } from '../channel-quick-options'
 import { ChannelTypeLogo } from '../channel-type-badge'
@@ -305,6 +306,7 @@ const SENSITIVE_FORM_FIELDS = [
   'file_relay_strict',
   'tls_insecure_skip_verify',
   'pass_through_body_enabled',
+  'body_text_replacement',
   'responses_websocket_enabled',
   'system_prompt',
   'system_prompt_override',
@@ -4828,6 +4830,9 @@ export function ChannelMutateDrawer({
                 {ollamaOpenAIChatFields}
                 {thinkingFields}
                 {passthroughFields}
+                <BodyTextReplacementSetting
+                  disabled={sensitiveLocked || isSubmitting}
+                />
                 {systemPromptFields}
                 {systemPromptOverrideFields}
               </fieldset>
