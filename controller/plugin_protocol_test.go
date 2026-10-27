@@ -1873,11 +1873,15 @@ func TestServeTaskPluginImageProtocolDisconnectDuringSubmissionKeepsDurableSettl
 }
 
 func TestServeTaskPluginImageProtocolRendersAfterProviderSwitch(t *testing.T) {
-	for _, pluginKey := range []string{"jingyu", "rh-reverse"} {
+	for _, pluginKey := range []string{"jingyu", "rh-reverse", "magnific"} {
 		t.Run(pluginKey, func(t *testing.T) {
 			setupFileRelayTest(t)
 			registry := pluginruntime.NewRegistry()
-			firstSource := strings.ReplaceAll(imageProtocolTestPlugin, "image-model", "nano-banana-2")
+			modelName := "nano-banana-2"
+			if pluginKey == "magnific" {
+				modelName = "nano-banana-pro"
+			}
+			firstSource := strings.ReplaceAll(imageProtocolTestPlugin, "image-model", modelName)
 			firstSource = strings.ReplaceAll(firstSource, `return {data: data, vendor: "test"};`, `throw new Error("initial provider must not render the fallback result");`)
 			_, err := registry.RegisterFactory(firstSource, pluginruntime.Options{Key: "image-bridge"})
 			require.NoError(t, err)
@@ -1886,9 +1890,9 @@ func TestServeTaskPluginImageProtocolRendersAfterProviderSwitch(t *testing.T) {
 			fallback, err := registry.RegisterFactory(source, pluginruntime.Options{Key: pluginKey})
 			require.NoError(t, err)
 			generation := registry.Generation()
-			candidates := generation.LookupEndpointCandidates(http.MethodPost, "/v1/images/generations", "nano-banana-2")
+			candidates := generation.LookupEndpointCandidates(http.MethodPost, "/v1/images/generations", modelName)
 			require.Len(t, candidates, 2)
-			pinned := pluginruntime.PinnedEndpoint{Generation: generation, Plugin: candidates[0].Plugin, Protocol: candidates[0].Protocol, Operation: candidates[0].Operation, Model: "nano-banana-2", Candidates: candidates}
+			pinned := pluginruntime.PinnedEndpoint{Generation: generation, Plugin: candidates[0].Plugin, Protocol: candidates[0].Protocol, Operation: candidates[0].Operation, Model: modelName, Candidates: candidates}
 			c, recorder := newImageProtocolTestContext("b64_json")
 			c.Set("resolved_task_model", pinned.Model)
 			c.Set("expected_task_plugin_key", pinned.Plugin.Meta.Key)
@@ -1956,6 +1960,17 @@ func TestServeTaskPluginImageProtocolRendersAfterProviderSwitch(t *testing.T) {
 						assert.Equal(t, "1k", converted["resolution"])
 						assert.Equal(t, "1:1", converted["aspectRatio"])
 						assert.NotContains(t, converted, "response_format")
+					} else if pluginKey == "magnific" {
+						built, buildErr := fallback.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{"model": pinned.Model, "requestBody": converted, "baseUrl": "https://api.magnific.com", "apiKey": "test-key"})
+						require.NoError(t, buildErr)
+						encoded, marshalErr := common.Marshal(built)
+						require.NoError(t, marshalErr)
+						var descriptor map[string]any
+						require.NoError(t, common.Unmarshal(encoded, &descriptor))
+						assert.Equal(t, "https://api.magnific.com/v1/ai/text-to-image/nano-banana-pro", descriptor["url"])
+						converted = descriptor["body"].(map[string]any)
+						assert.Equal(t, "1:1", converted["aspect_ratio"])
+						assert.NotContains(t, converted, "response_format")
 					} else {
 						assert.Equal(t, "1024x1024", converted["aspect_ratio"])
 						assert.Equal(t, "url", converted["response_format"])
@@ -1965,6 +1980,9 @@ func TestServeTaskPluginImageProtocolRendersAfterProviderSwitch(t *testing.T) {
 					payload := map[string]any{"code": "success", "data": map[string]any{"status": "SUCCESS", "results": []any{map[string]any{"url": "https://cdn.example/fallback.png"}}}}
 					if pluginKey == "rh-reverse" {
 						payload = map[string]any{"id": "vendor-task", "status": "success", "outputUrl": "https://cdn.example/fallback.png"}
+					}
+					if pluginKey == "magnific" {
+						payload = map[string]any{"data": map[string]any{"task_id": "vendor-task", "status": "COMPLETED", "generated": []string{"https://cdn.example/fallback.png"}}}
 					}
 					body, err := common.Marshal(payload)
 					require.NoError(t, err)
