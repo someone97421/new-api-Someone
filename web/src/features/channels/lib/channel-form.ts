@@ -136,6 +136,40 @@ function isOptionalJsonObject(value: string | undefined): boolean {
   }
 }
 
+function isOptionalVideoTaskEndpoints(value: string | undefined): boolean {
+  try {
+    const parsed = parseOptionalJson(value)
+    if (parsed === undefined) return true
+    if (!isJsonObjectValue(parsed)) return false
+    for (const field of [
+      'submit_path',
+      'query_path',
+      'content_path',
+      'remix_path',
+    ]) {
+      const endpoint = parsed[field]
+      if (endpoint === undefined || endpoint === '') continue
+      if (typeof endpoint !== 'string') return false
+      if (
+        !endpoint.startsWith('/') ||
+        endpoint.startsWith('//') ||
+        endpoint.includes('#')
+      ) {
+        return false
+      }
+      if (field === 'submit_path') {
+        if (endpoint.includes('{task_id}')) return false
+      } else {
+        const token = field === 'remix_path' ? '{video_id}' : '{task_id}'
+        if (endpoint.split(token).length !== 2) return false
+      }
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
 function isOptionalModelMapping(value: string | undefined): boolean {
   try {
     const parsed = parseOptionalJson(value)
@@ -217,6 +251,7 @@ export const channelFormSchema = z
     base_url: z.string().optional(),
     task_plugin_key: z.string().optional(),
     task_extend_plugin_keys: z.array(z.string()).optional(),
+    request_plugins: z.array(z.string()).optional(),
     key: z.string(),
     openai_organization: z.string().optional(),
     models: z.string().min(1, ERROR_MESSAGES.REQUIRED_MODELS),
@@ -262,6 +297,10 @@ export const channelFormSchema = z
       .optional()
       .refine(isOptionalJsonObject, ERROR_MESSAGES.INVALID_JSON),
     advanced_custom: z.string().optional(),
+    video_task_endpoints: z
+      .string()
+      .optional()
+      .refine(isOptionalVideoTaskEndpoints, 'Invalid video task endpoints'),
     other: z.string().optional(),
     // Multi-key options (not sent to backend directly)
     multi_key_mode: z.enum(['single', 'batch', 'multi_to_single']).optional(),
@@ -279,6 +318,7 @@ export const channelFormSchema = z
     http2_connection_shards: z.number().int().optional(),
     file_relay_enabled: z.boolean().optional(),
     file_relay_strict: z.enum(['inherit', 'on', 'off']).optional(),
+    tls_insecure_skip_verify: z.boolean().optional(),
     pass_through_body_enabled: z.boolean().optional(),
     responses_websocket_enabled: z.boolean().optional(),
     system_prompt: z.string().optional(),
@@ -286,7 +326,10 @@ export const channelFormSchema = z
     // Type-specific settings (stored in settings JSON)
     is_enterprise_account: z.boolean().optional(), // OpenRouter specific
     vertex_key_type: z.enum(['json', 'api_key']).optional(), // Vertex AI specific
+    vertex_project_id: z.string().optional(), // Vertex AI specific (api_key mode only)
+    vertex_api_version: z.enum(['v1', 'v1beta1']).optional(), // Vertex AI Google model (Gemini, Imagen) path version
     aws_key_type: z.enum(['ak_sk', 'api_key']).optional(), // AWS specific
+    aws_api_type: z.enum(['invoke_model', 'mantle']).optional(),
     azure_responses_version: z.string().optional(), // Azure specific
     // Field passthrough controls (stored in settings JSON)
     allow_service_tier: z.boolean().optional(), // OpenAI/Anthropic
@@ -302,6 +345,13 @@ export const channelFormSchema = z
     upstream_model_update_check_enabled: z.boolean().optional(),
     upstream_model_update_auto_sync_enabled: z.boolean().optional(),
     upstream_model_update_ignored_models: z.string().optional(),
+    // The bound plugin's channel settings (type 61, stored in settings JSON)
+    plugin_config: z.record(z.string(), z.unknown()).optional(),
+    // Their values as typed, null until edited (not sent to backend)
+    plugin_config_draft: z
+      .record(z.string(), z.unknown())
+      .nullable()
+      .optional(),
   })
   .superRefine((data, ctx) => {
     if (
@@ -442,6 +492,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   base_url: '',
   task_plugin_key: '',
   task_extend_plugin_keys: [],
+  request_plugins: [],
   key: '',
   openai_organization: '',
   models: '',
@@ -472,6 +523,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   http2_connection_shards: 1,
   file_relay_enabled: false,
   file_relay_strict: 'inherit',
+  tls_insecure_skip_verify: false,
   pass_through_body_enabled: false,
   responses_websocket_enabled: false,
   system_prompt: '',
@@ -479,7 +531,10 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   // Type-specific settings
   is_enterprise_account: false,
   vertex_key_type: 'json',
+  vertex_project_id: '',
+  vertex_api_version: 'v1',
   aws_key_type: 'ak_sk',
+  aws_api_type: 'invoke_model',
   azure_responses_version: '',
   // Field passthrough controls
   allow_service_tier: false,
@@ -495,6 +550,9 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   upstream_model_update_auto_sync_enabled: false,
   upstream_model_update_ignored_models: '',
   advanced_custom: '',
+  plugin_config: {},
+  plugin_config_draft: null,
+  video_task_endpoints: '',
 }
 
 // ============================================================================
@@ -511,6 +569,7 @@ export function transformChannelToFormDefaults(
   let extraSettings = {
     task_plugin_key: '',
     task_extend_plugin_keys: [] as string[],
+    request_plugins: [] as string[],
     force_format: false,
     thinking_to_content: false,
     proxy: '',
@@ -518,6 +577,7 @@ export function transformChannelToFormDefaults(
     http2_connection_shards: 1,
     file_relay_enabled: false,
     file_relay_strict: 'inherit' as 'inherit' | 'on' | 'off',
+    tls_insecure_skip_verify: false,
     pass_through_body_enabled: false,
     responses_websocket_enabled: false,
     system_prompt: '',
@@ -534,6 +594,11 @@ export function transformChannelToFormDefaults(
       extraSettings = {
         task_plugin_key: parsed.task_plugin_key || '',
         task_extend_plugin_keys: readTaskExtendPluginKeys(channel.type, parsed),
+        request_plugins: Array.isArray(parsed.request_plugins)
+          ? parsed.request_plugins.filter(
+              (id: unknown): id is string => typeof id === 'string'
+            )
+          : [],
         force_format: parsed.force_format || false,
         thinking_to_content: parsed.thinking_to_content || false,
         proxy: parsed.proxy || '',
@@ -543,6 +608,7 @@ export function transformChannelToFormDefaults(
         file_relay_strict: normalizeFileRelayOverride(
           parsed.file_relay?.strict
         ),
+        tls_insecure_skip_verify: parsed.tls_insecure_skip_verify === true,
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
         responses_websocket_enabled:
           parsed.responses_websocket_enabled === true,
@@ -557,9 +623,12 @@ export function transformChannelToFormDefaults(
 
   // Parse type-specific settings from settings field
   let vertexKeyType: 'json' | 'api_key' = 'json'
+  let vertexProjectId = ''
+  let vertexApiVersion: 'v1' | 'v1beta1' = 'v1'
   let azureResponsesVersion = ''
   let isEnterpriseAccount = false
   let awsKeyType: 'ak_sk' | 'api_key' = 'ak_sk'
+  let awsApiType: 'invoke_model' | 'mantle' = 'invoke_model'
   let allowServiceTier = false
   let disableStore = false
   let allowSafetyIdentifier = false
@@ -573,14 +642,20 @@ export function transformChannelToFormDefaults(
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
   let advancedCustom = ''
+  let videoTaskEndpoints = ''
+  let pluginConfig: Record<string, unknown> = {}
 
   if (channel.settings) {
     try {
       const parsed = JSON.parse(channel.settings)
       vertexKeyType = parsed.vertex_key_type || 'json'
+      vertexProjectId = parsed.vertex_project_id || ''
+      vertexApiVersion =
+        parsed.vertex_api_version === 'v1beta1' ? 'v1beta1' : 'v1'
       azureResponsesVersion = parsed.azure_responses_version || ''
       isEnterpriseAccount = parsed.openrouter_enterprise === true
       awsKeyType = parsed.aws_key_type || 'ak_sk'
+      awsApiType = parsed.aws_api_type || 'invoke_model'
       allowServiceTier = parsed.allow_service_tier === true
       disableStore = parsed.disable_store === true
       allowSafetyIdentifier = parsed.allow_safety_identifier === true
@@ -601,6 +676,16 @@ export function transformChannelToFormDefaults(
         : ''
       if (parsed.advanced_custom) {
         advancedCustom = stringifyAdvancedCustomConfig(parsed.advanced_custom)
+      }
+      if (isJsonObjectValue(parsed.video_task_endpoints)) {
+        videoTaskEndpoints = JSON.stringify(
+          parsed.video_task_endpoints,
+          null,
+          2
+        )
+      }
+      if (isJsonObjectValue(parsed.plugin_config)) {
+        pluginConfig = parsed.plugin_config
       }
     } catch (error) {
       // eslint-disable-next-line no-console
@@ -639,8 +724,11 @@ export function transformChannelToFormDefaults(
     // Type-specific settings
     is_enterprise_account: isEnterpriseAccount,
     vertex_key_type: vertexKeyType,
+    vertex_project_id: vertexProjectId,
+    vertex_api_version: vertexApiVersion,
     azure_responses_version: azureResponsesVersion,
     aws_key_type: awsKeyType,
+    aws_api_type: awsApiType,
     allow_service_tier: allowServiceTier,
     disable_store: disableStore,
     allow_include_obfuscation: allowIncludeObfuscation,
@@ -654,6 +742,9 @@ export function transformChannelToFormDefaults(
     upstream_model_update_auto_sync_enabled: upstreamModelUpdateAutoSyncEnabled,
     upstream_model_update_ignored_models: upstreamModelUpdateIgnoredModels,
     advanced_custom: advancedCustom,
+    video_task_endpoints: videoTaskEndpoints,
+    plugin_config: pluginConfig,
+    plugin_config_draft: null,
   }
 }
 
@@ -671,14 +762,17 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
       formData.task_extend_plugin_keys?.length
         ? formData.task_extend_plugin_keys
         : undefined,
+    request_plugins: formData.request_plugins?.length
+      ? formData.request_plugins
+      : undefined,
     force_format: formData.force_format || false,
     thinking_to_content: formData.thinking_to_content || false,
     proxy: formData.proxy?.trim() || '',
-    pass_through_body_enabled:
-      formData.type !== CHANNEL_TYPE_ADVANCED_CUSTOM &&
-      formData.pass_through_body_enabled === true,
+    pass_through_body_enabled: formData.pass_through_body_enabled === true,
+    // A plugin channel shows the switch only when its plugin can serve it.
     responses_websocket_enabled:
-      supportsResponsesWebSocket(formData.type) &&
+      (supportsResponsesWebSocket(formData.type) ||
+        formData.type === CHANNEL_TYPE_TASK_PLUGIN) &&
       formData.responses_websocket_enabled === true,
     system_prompt: formData.system_prompt || '',
     system_prompt_override: formData.system_prompt_override || false,
@@ -704,6 +798,9 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
   } else if (shards > 1) {
     settingObj.http2_connection_shards = shards
   }
+  if (formData.tls_insecure_skip_verify === true) {
+    settingObj.tls_insecure_skip_verify = true
+  }
 
   return JSON.stringify(settingObj)
 }
@@ -724,11 +821,29 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     }
   }
 
+  if (
+    [1, 55].includes(formData.type) &&
+    formData.video_task_endpoints?.trim()
+  ) {
+    settingsObj.video_task_endpoints = JSON.parse(formData.video_task_endpoints)
+  } else {
+    delete settingsObj.video_task_endpoints
+  }
+
   // Add vertex_key_type for Vertex AI channels (type 41)
   if (formData.type === 41) {
     settingsObj.vertex_key_type = formData.vertex_key_type || 'json'
-  } else if ('vertex_key_type' in settingsObj) {
+    const vertexProjectId = formData.vertex_project_id?.trim()
+    if (settingsObj.vertex_key_type === 'api_key' && vertexProjectId) {
+      settingsObj.vertex_project_id = vertexProjectId
+    } else {
+      delete settingsObj.vertex_project_id
+    }
+    settingsObj.vertex_api_version = formData.vertex_api_version || 'v1'
+  } else {
     delete settingsObj.vertex_key_type
+    delete settingsObj.vertex_project_id
+    delete settingsObj.vertex_api_version
   }
 
   // Add azure_responses_version for Azure channels (type 3)
@@ -745,11 +860,13 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     delete settingsObj.openrouter_enterprise
   }
 
-  // Add aws_key_type for AWS channels (type 33)
+  // AWS interface selection is opt-in; existing channels retain InvokeModel.
   if (formData.type === 33) {
     settingsObj.aws_key_type = formData.aws_key_type || 'ak_sk'
-  } else if ('aws_key_type' in settingsObj) {
+    settingsObj.aws_api_type = formData.aws_api_type || 'invoke_model'
+  } else {
     delete settingsObj.aws_key_type
+    delete settingsObj.aws_api_type
   }
 
   // Field passthrough controls:
@@ -812,8 +929,12 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
   settingsObj.disable_task_polling_sleep =
     formData.disable_task_polling_sleep === true
 
-  // Upstream model update settings (for model-fetchable channel types)
-  if (MODEL_FETCHABLE_TYPES.has(formData.type)) {
+  // Upstream model update settings (for model-fetchable channel types; a
+  // plugin channel shows them when its plugin can list models)
+  if (
+    MODEL_FETCHABLE_TYPES.has(formData.type) ||
+    formData.type === CHANNEL_TYPE_TASK_PLUGIN
+  ) {
     settingsObj.upstream_model_update_check_enabled =
       formData.upstream_model_update_check_enabled === true
     settingsObj.upstream_model_update_auto_sync_enabled =
@@ -847,6 +968,16 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     }
   } else if ('advanced_custom' in settingsObj) {
     delete settingsObj.advanced_custom
+  }
+
+  // Only set values are kept; the plugin's defaults apply to the rest.
+  if (
+    formData.type === CHANNEL_TYPE_TASK_PLUGIN &&
+    Object.keys(formData.plugin_config ?? {}).length > 0
+  ) {
+    settingsObj.plugin_config = formData.plugin_config
+  } else {
+    delete settingsObj.plugin_config
   }
 
   return JSON.stringify(settingsObj)

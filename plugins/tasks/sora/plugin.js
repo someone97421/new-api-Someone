@@ -95,7 +95,8 @@ function requestValues(req, model) {
 function taskPath(ctx, name, fallback, idKey) {
   const configured = ctx.videoTaskEndpoints && ctx.videoTaskEndpoints[name];
   const path = trimmed(configured) || fallback;
-  const taskId = idKey === "{task_id}" ? ctx.taskId : ctx.upstreamTaskId || ctx.originTaskId;
+  const origin = (ctx.originTasks || []).find(function (task) { return task.taskId === ctx.originTaskId; });
+  const taskId = idKey === "{task_id}" ? ctx.taskId : (origin && origin.upstreamTaskId) || ctx.upstreamTaskId || ctx.originTaskId;
   return ctx.baseUrl + path.replace(idKey, encodeURIComponent(taskId || ""));
 }
 

@@ -18,8 +18,10 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { FieldErrors, FieldPath } from 'react-hook-form'
 
+import type { TaskPluginOption } from '../api'
 import {
   CHANNEL_TYPE_OLLAMA,
+  CHANNEL_TYPE_TASK_PLUGIN,
   CLAUDE_FIELD_PASSTHROUGH_TYPES,
   MODEL_FETCHABLE_TYPES,
   OPENAI_FIELD_PASSTHROUGH_TYPES,
@@ -52,7 +54,12 @@ const CONFIGURATION_BLOCKS = {
   },
   overrideRules: {
     section: 'request',
-    fields: ['status_code_mapping', 'param_override', 'header_override'],
+    fields: [
+      'status_code_mapping',
+      'param_override',
+      'request_plugins',
+      'header_override',
+    ],
   },
   requestProcessing: {
     section: 'request',
@@ -64,6 +71,7 @@ const CONFIGURATION_BLOCKS = {
       'ollama_openai_chat',
       'system_prompt',
       'system_prompt_override',
+      'video_task_endpoints',
     ],
   },
   fieldPassthrough: {
@@ -86,6 +94,7 @@ const CONFIGURATION_BLOCKS = {
       'http2_connection_shards',
       'file_relay_enabled',
       'file_relay_strict',
+      'tls_insecure_skip_verify',
       'disable_task_polling_sleep',
     ],
   },
@@ -132,13 +141,24 @@ function hasConfiguredJson(value: string | undefined): boolean {
   return true
 }
 
+/**
+ * `keyOptional` is true when the form may save without a key: edits keep the
+ * stored key, and login plugins get theirs from the login dialog. `plugin` is
+ * the plugin a plugin channel is bound to; what it can serve decides which
+ * settings apply.
+ */
 export function getChannelConfigurationState(
   values: ChannelFormValues,
   errors: FieldErrors<ChannelFormValues>,
-  isEditing: boolean
+  keyOptional: boolean,
+  plugin?: Pick<TaskPluginOption, 'provider' | 'responsesWebsocket'>
 ) {
-  const openaiPassthrough = OPENAI_FIELD_PASSTHROUGH_TYPES.has(values.type)
-  const claudePassthrough = CLAUDE_FIELD_PASSTHROUGH_TYPES.has(values.type)
+  const pluginChannel = values.type === CHANNEL_TYPE_TASK_PLUGIN
+  const relays = !pluginChannel || plugin?.provider === true
+  const openaiPassthrough =
+    relays && OPENAI_FIELD_PASSTHROUGH_TYPES.has(values.type)
+  const claudePassthrough =
+    relays && CLAUDE_FIELD_PASSTHROUGH_TYPES.has(values.type)
   const configured: Record<ChannelConfigurationBlock, boolean> = {
     modelMapping: hasConfiguredJson(values.model_mapping),
     routingStrategy: Boolean(
@@ -150,17 +170,21 @@ export function getChannelConfigurationState(
     overrideRules:
       hasConfiguredJson(values.status_code_mapping) ||
       hasConfiguredJson(values.param_override) ||
+      Boolean(values.request_plugins?.length) ||
       hasConfiguredJson(values.header_override),
     requestProcessing: Boolean(
       (values.type === 1 && values.force_format) ||
       values.thinking_to_content ||
       (values.type !== CHANNEL_TYPE_ADVANCED_CUSTOM &&
         values.pass_through_body_enabled) ||
-      (supportsResponsesWebSocket(values.type) &&
+      ((supportsResponsesWebSocket(values.type) ||
+        (pluginChannel && plugin?.responsesWebsocket === true)) &&
         values.responses_websocket_enabled) ||
       (values.type === CHANNEL_TYPE_OLLAMA && values.ollama_openai_chat) ||
       values.system_prompt?.trim() ||
-      values.system_prompt_override
+      values.system_prompt_override ||
+      ([1, 55].includes(values.type) &&
+        hasConfiguredJson(values.video_task_endpoints))
     ),
     fieldPassthrough: Boolean(
       ((openaiPassthrough || claudePassthrough) &&
@@ -180,10 +204,12 @@ export function getChannelConfigurationState(
       values.file_relay_enabled ||
       (values.file_relay_strict != null &&
         values.file_relay_strict !== 'inherit') ||
+      values.tls_insecure_skip_verify ||
       values.disable_task_polling_sleep
     ),
     upstreamModelDetection:
-      MODEL_FETCHABLE_TYPES.has(values.type) &&
+      (MODEL_FETCHABLE_TYPES.has(values.type) ||
+        (pluginChannel && plugin?.provider === true)) &&
       Boolean(
         values.upstream_model_update_check_enabled ||
         values.upstream_model_update_auto_sync_enabled ||
@@ -229,7 +255,7 @@ export function getChannelConfigurationState(
     values.name.trim() &&
     values.type > 0 &&
     values.models.trim() &&
-    (isEditing || values.key?.trim())
+    (keyOptional || values.key?.trim())
   ) {
     sections.connection = 'ready'
   }

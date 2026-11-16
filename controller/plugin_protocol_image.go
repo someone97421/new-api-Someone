@@ -16,6 +16,7 @@ import (
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relay"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relay/requestplugin"
 	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
@@ -42,6 +43,11 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 	var relayInfoErr error
 	var outcome *taskSubmissionOutcome
 	var taskErr *dto.TaskError
+	// The request plugins' report hooks receive the submission once the
+	// client has the response.
+	defer func() {
+		requestplugin.Report(c, types.RelayFormatTask, relayInfo, nil, taskReportError(taskErr))
+	}()
 	// DashScope bills the images as soon as it accepts the upstream call. A
 	// client that gives up while the submission is in flight must not cancel
 	// that call, the task row, its settlement, or its consume log, so the
@@ -82,7 +88,7 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 		return
 	}
 	if relayInfoErr != nil {
-		logger.LogError(c, "build task protocol relay info failed: "+relayInfoErr.Error())
+		logger.LogError(c, common.LogText("build task protocol relay info failed: %s", relayInfoErr.Error()))
 		respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
 		return
 	}
@@ -102,8 +108,8 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 		}
 		pinned = selected
 	}
-	if outcome == nil || outcome.Task == nil || outcome.Task.Platform != constant.TaskPlatform(pinned.Plugin.Meta.Key) {
-		logger.LogError(c, "task protocol submission returned an invalid durable outcome")
+	if outcome == nil || outcome.Task == nil || outcome.Task.UserId != relayInfo.UserId || outcome.Task.Platform != constant.TaskPlatform(pinned.Plugin.Meta.Key) {
+		logger.LogError(c, common.LogText("task protocol submission returned an invalid durable outcome"))
 		respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
 		return
 	}
@@ -123,31 +129,34 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 		if reason == "" {
 			reason = "image generation failed"
 		}
-		respondTaskPluginImageError(c, service.TaskErrorWrapperLocal(errors.New(reason), "image_generation_failed", http.StatusBadRequest))
+		// The fail reason comes from the upstream, so mask the channel address in it.
+		taskErr = service.TaskErrorWrapper(errors.New(reason), "image_generation_failed", http.StatusBadRequest, common.UpstreamAddresses(c)...)
+		taskErr.LocalError = true
+		respondTaskPluginImageError(c, taskErr)
 		return
 	}
 	view, err := service.BuildTaskPluginView(task)
 	if err != nil {
-		logger.LogError(c, "build task protocol view failed: "+err.Error())
+		logger.LogError(c, common.LogText("build task protocol view failed: %s", err.Error()))
 		respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
 		return
 	}
 	viewValue, err := taskPluginProtocolJSONValue(view)
 	if err != nil {
-		logger.LogError(c, "encode task protocol view failed: "+err.Error())
+		logger.LogError(c, common.LogText("encode task protocol view failed: %s", err.Error()))
 		respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
 		return
 	}
 	payload, err := pinned.Plugin.Engine.CallPathWithAdmissionTimeout(c.Request.Context(), deps.admissionTimeout, "protocols", []string{pinned.Protocol, "render"}, protocolRequest.JSValueFor(pinned.Plugin.Meta), viewValue)
 	if err != nil {
-		logger.LogError(c, "task protocol image render hook failed: "+err.Error())
+		logger.LogError(c, common.LogText("task protocol image render hook failed: %s", err.Error()))
 		respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
 		return
 	}
 	response, ok := payload.(map[string]any)
 	data, hasData := response["data"].([]any)
 	if !ok || !hasData {
-		logger.LogError(c, "task protocol image render hook must return an object with a data array")
+		logger.LogError(c, common.LogText("task protocol image render hook must return an object with a data array"))
 		respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
 		return
 	}
@@ -172,7 +181,7 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 			}
 			_, encoded, downloadErr := deps.downloadImage(url)
 			if downloadErr != nil {
-				logger.LogWarn(c, fmt.Sprintf("task protocol image download failed; returning the upstream URL instead of b64_json: %s", common.MaskSensitiveInfo(downloadErr.Error())))
+				logger.LogWarn(c, common.LogText("task protocol image download failed; returning the upstream URL instead of b64_json: %s", common.MaskSensitiveInfo(downloadErr.Error(), common.UpstreamAddresses(c)...)))
 				continue
 			}
 			item["b64_json"] = encoded
@@ -213,7 +222,7 @@ func waitTaskPluginImageTask(c *gin.Context, task *model.Task, deps pluginProtoc
 		case <-timer.C:
 		}
 		if err := deps.pollTask(ctx, task); err != nil {
-			logger.LogWarn(c, fmt.Sprintf("task protocol image poll failed for task %s: %s", task.TaskID, common.MaskSensitiveInfo(err.Error())))
+			logger.LogWarn(c, common.LogText("task protocol image poll failed for task %s: %s", task.TaskID, common.MaskSensitiveInfo(err.Error(), common.UpstreamAddresses(c)...)))
 			continue
 		}
 		if task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure {

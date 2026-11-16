@@ -3,19 +3,22 @@ package controller
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/base64"
+	"github.com/MoeForge/moego/ojson"
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
@@ -73,7 +76,8 @@ func PluginVideoContent(c *gin.Context) {
 		videoProxyError(c, http.StatusInternalServerError, "server_error", "Content route is unavailable")
 		return
 	}
-	videoProxy(c, c.Param(pinned.Route.TaskIDParam), &pinned)
+	params := jsplugin.RouteParams(c.Params, pinned.Route)
+	videoProxy(c, params[pinned.Route.TaskIDParam], &pinned)
 }
 
 func videoProxy(c *gin.Context, taskID string, pinned *jsplugin.PinnedRoute) {
@@ -84,21 +88,40 @@ func videoProxy(c *gin.Context, taskID string, pinned *jsplugin.PinnedRoute) {
 
 	task, exists, err := getTaskForArtifactRequest(c, taskID)
 	if err != nil {
-		logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to query task %s: %s", taskID, err.Error()))
+		logger.LogError(c.Request.Context(), common.LogText("Failed to query task %s: %s", taskID, err.Error()))
 		videoProxyError(c, http.StatusInternalServerError, "server_error", "Failed to query task")
 		return
 	}
-	if !exists || task == nil {
+	if !exists || task == nil || !task.ResultRetrievable() {
 		videoProxyError(c, http.StatusNotFound, "invalid_request_error", "Task not found")
 		return
 	}
 	if pinned != nil {
-		plugin, matches := relay.ResolveTaskPluginForPlatform(pinned.Generation, task.Platform)
-		if channelType, parseErr := strconv.Atoi(string(task.Platform)); parseErr == nil {
-			plugin, matches = pinned.Generation.GetByChannelType(channelType)
+		candidates := pinned.Candidates
+		if len(candidates) == 0 {
+			candidates = []jsplugin.RouteBinding{{Plugin: pinned.Plugin, Route: pinned.Route}}
 		}
-		if !matches || plugin.Meta.Key != pinned.Plugin.Meta.Key ||
-			(taskHasPluginExecution(task) && task.PrivateData.Execution.TaskPlugin.Key != pinned.Plugin.Meta.Key) {
+		matched := false
+		for _, candidate := range candidates {
+			if candidate.Route.Type != jsplugin.RouteTypeContent {
+				continue
+			}
+			if taskHasPluginExecution(task) {
+				matched = task.PrivateData.Execution.TaskPlugin.Key == candidate.Plugin.Meta.Key
+			} else if channelType, parseErr := strconv.Atoi(string(task.Platform)); parseErr == nil {
+				matched = slices.Contains(candidate.Plugin.Meta.ChannelTypes, channelType)
+			} else {
+				plugin, found := relay.ResolveTaskPluginForPlatform(pinned.Generation, task.Platform)
+				matched = found && plugin.Meta.Key == candidate.Plugin.Meta.Key
+			}
+			if matched {
+				pinned.Plugin, pinned.Route = candidate.Plugin, candidate.Route
+				c.Set(jsplugin.ContextKeyPinnedRoute, *pinned)
+				c.Set(jsplugin.ContextKeyPinnedPlugin, jsplugin.PinnedPlugin{Generation: pinned.Generation, Plugin: candidate.Plugin})
+				break
+			}
+		}
+		if !matched {
 			videoProxyError(c, http.StatusNotFound, "invalid_request_error", "Task not found")
 			return
 		}
@@ -126,21 +149,20 @@ func videoProxy(c *gin.Context, taskID string, pinned *jsplugin.PinnedRoute) {
 				adaptor, adaptorErr := initTaskArtifactAdaptor(task)
 				if adaptorErr == nil {
 					if provider, ok := adaptor.(relaychannel.TaskContentRequestProvider); ok {
-						artifactKey = artifact.Key
-						descriptor, adaptorErr = provider.BuildContentRequest(task, artifact.Key, relaychannel.TaskArtifactClientRequest{
+						descriptor, adaptorErr = provider.BuildContentRequest(c.Request.Context(), task, artifact.Key, relaychannel.TaskArtifactClientRequest{
 							Method:  c.Request.Method,
 							Headers: taskArtifactClientHeaders(c.Request.Header),
 						})
 					}
 				}
 				if adaptorErr != nil {
-					logger.LogWarn(c.Request.Context(), fmt.Sprintf("Failed to resolve plugin video content for task %s", taskID))
+					logger.LogWarn(c.Request.Context(), common.LogText("Failed to resolve plugin video content for task %s: %v", taskID, adaptorErr))
 					descriptor = nil
 				}
 				break
 			}
 		} else {
-			logger.LogWarn(c.Request.Context(), fmt.Sprintf("Failed to project plugin video for task %s", taskID))
+			logger.LogWarn(c.Request.Context(), common.LogText("Failed to project plugin video for task %s", taskID))
 		}
 	}
 	if descriptor == nil {
@@ -283,7 +305,8 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, artifactKey string, descri
 			message: "Artifact channel is unavailable", err: channelErr,
 		}
 	}
-	proxy := strings.TrimSpace(channel.GetSetting().Proxy)
+	setting := channel.GetSetting()
+	proxy := strings.TrimSpace(setting.Proxy)
 	if err := validateTaskMediaURL(rawURL, proxy); err != nil {
 		return &taskMediaProxyError{
 			status: http.StatusBadGateway, code: "artifact_request_rejected",
@@ -293,7 +316,7 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, artifactKey string, descri
 
 	client := service.GetSSRFProtectedHTTPClient()
 	if proxy != "" {
-		client, err = service.GetHttpClientWithProxy(proxy)
+		client, err = service.GetHttpClientWithProxySettings(proxy, setting)
 		if err != nil {
 			return &taskMediaProxyError{
 				status: http.StatusInternalServerError, code: "artifact_internal_error",
@@ -318,7 +341,11 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, artifactKey string, descri
 			message: "Artifact request headers were rejected", err: err,
 		}
 	}
-	clientHeaders := taskArtifactClientHeaders(c.Request.Header)
+	// Range and validators address the media, not a JSON reply carrying it.
+	clientHeaders := map[string]string{}
+	if len(descriptor.ContentPath) == 0 {
+		clientHeaders = taskArtifactClientHeaders(c.Request.Header)
+	}
 	for name, value := range clientHeaders {
 		req.Header.Set(name, value)
 	}
@@ -362,6 +389,9 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, artifactKey string, descri
 	}
 	defer resp.Body.Close()
 
+	if len(descriptor.ContentPath) > 0 && resp.StatusCode == http.StatusOK {
+		return writeTaskMediaContentPath(c, resp.Body, descriptor)
+	}
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusPartialContent, http.StatusNotModified, http.StatusRequestedRangeNotSatisfiable:
 		copyTaskMediaResponseHeaders(c.Writer.Header(), resp.Header)
@@ -372,7 +402,7 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, artifactKey string, descri
 			return nil
 		}
 		if _, err := io.Copy(c.Writer, resp.Body); err != nil {
-			logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to stream task media: %v", err))
+			logger.LogError(c.Request.Context(), common.LogText("Failed to stream task media: %v", err))
 		}
 		return nil
 	case http.StatusUnauthorized, http.StatusForbidden:
@@ -405,6 +435,89 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, artifactKey string, descri
 type taskMediaHTTPResult struct {
 	response *http.Response
 	err      error
+}
+
+// writeTaskMediaContentPath answers with an artifact the upstream delivers
+// inside a long-running operation: the base64 string at the descriptor's
+// ContentPath of the JSON reply. An operation that failed is an upstream
+// error, one not yet done is not ready, and one without the string, expired
+// or written to storage instead, no longer has the content.
+func writeTaskMediaContentPath(c *gin.Context, body io.Reader, descriptor *relaychannel.TaskContentRequest) error {
+	limitMB := constant.MaxFileDownloadMB
+	if limitMB <= 0 {
+		limitMB = 64
+	}
+	// Base64 makes the media a third larger; the rest of the reply is small.
+	limit := int64(limitMB)<<20*4/3 + 1<<20
+	raw, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return &taskMediaProxyError{
+			status: http.StatusBadGateway, code: "artifact_upstream_error",
+			message: "Failed to fetch artifact content", err: err,
+		}
+	}
+	if int64(len(raw)) > limit {
+		return &taskMediaProxyError{
+			status: http.StatusBadGateway, code: "artifact_request_rejected",
+			message: "Artifact request was rejected", err: errTaskMediaRequestRejected,
+		}
+	}
+	if !ojson.ValidBytes(raw) {
+		return &taskMediaProxyError{
+			status: http.StatusBadGateway, code: "artifact_upstream_error",
+			message: "Failed to decode artifact content",
+		}
+	}
+	// The root shares memory with raw, which stays unchanged until the
+	// artifact is written, so the base64 payload is not copied.
+	operation := ojson.GetBytesNoCopy(raw, "@this")
+	if failure := operation.Get("error"); failure.Exists() && failure.Type != ojson.Null {
+		return &taskMediaProxyError{
+			status: http.StatusBadGateway, code: "artifact_upstream_error",
+			message: "Artifact upstream returned an error",
+		}
+	}
+	// An interaction reports completion through status, not done.
+	if operation.Get("done").Type != ojson.True && operation.Get("status").String() != "completed" {
+		return &taskMediaProxyError{
+			status: http.StatusConflict, code: "artifact_not_ready",
+			message: "Task artifacts are not ready",
+		}
+	}
+	content := operation
+	for _, segment := range descriptor.ContentPath {
+		if key, isKey := segment.(string); isKey && content.IsObject() {
+			content = content.Get(ojson.Escape(key))
+			continue
+		}
+		index := ""
+		switch typed := segment.(type) {
+		case int:
+			index = strconv.Itoa(typed)
+		case int64:
+			index = strconv.FormatInt(typed, 10)
+		case float64:
+			index = strconv.FormatFloat(typed, 'f', -1, 64)
+		}
+		if index == "" || !content.IsArray() {
+			content = ojson.Result{}
+			break
+		}
+		content = content.Get(index)
+	}
+	if content.Type != ojson.String || content.Str == "" {
+		return &taskMediaProxyError{
+			status: http.StatusGone, code: "artifact_gone",
+			message: "Artifact content is no longer available",
+		}
+	}
+	if err := writeTaskMediaBase64(c, descriptor.MimeType, content.Str); err != nil {
+		return &taskMediaProxyError{
+			status: http.StatusBadGateway, code: "artifact_upstream_error",
+			message: "Failed to decode artifact content", err: err,
+		}
+	}
+	return nil
 }
 
 type taskMediaCancelBody struct {
@@ -471,20 +584,11 @@ func doTaskMediaRequest(client *http.Client, request *http.Request, responseHead
 }
 
 func applyTaskMediaRequestHeaders(destination http.Header, headers map[string]string) error {
-	if len(headers) > 64 {
+	if jsplugin.ValidateRequestHeaders(headers) != nil {
 		return errTaskMediaRequestRejected
 	}
 	for name, value := range headers {
-		name = strings.TrimSpace(name)
-		if !httpguts.ValidHeaderFieldName(name) || !httpguts.ValidHeaderFieldValue(value) || len(value) > 8192 {
-			return errTaskMediaRequestRejected
-		}
-		switch strings.ToLower(name) {
-		case "host", "content-length", "accept-encoding", "connection", "proxy-connection", "keep-alive",
-			"proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade":
-			return errTaskMediaRequestRejected
-		}
-		destination.Set(name, value)
+		destination.Set(strings.TrimSpace(name), value)
 	}
 	return nil
 }
@@ -671,6 +775,13 @@ func writeVideoDataURL(c *gin.Context, dataURL string) error {
 
 	mimeType := strings.TrimPrefix(header, "data:")
 	mimeType = strings.TrimSuffix(mimeType, ";base64")
+	return writeTaskMediaBase64(c, mimeType, payload)
+}
+
+// writeTaskMediaBase64 answers with media the upstream delivered as base64,
+// decoding it while it streams; HEAD gets the headers only. The media type
+// defaults to video/mp4.
+func writeTaskMediaBase64(c *gin.Context, mimeType, payload string) error {
 	if mimeType == "" {
 		mimeType = "video/mp4"
 	}
@@ -680,11 +791,11 @@ func writeVideoDataURL(c *gin.Context, dataURL string) error {
 
 	var encoding *base64.Encoding
 	var contentLength int64
-	for _, candidate := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding} {
-		decodedLength, err := io.Copy(io.Discard, base64.NewDecoder(candidate, strings.NewReader(payload)))
+	for _, candidate := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		decodedLength, err := candidate.ValidateString(payload)
 		if err == nil {
 			encoding = candidate
-			contentLength = decodedLength
+			contentLength = int64(decodedLength)
 			break
 		}
 	}
