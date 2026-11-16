@@ -371,8 +371,15 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	// reset some fields based on channel meta
 	// 重置某些字段，例如模型名称等
 	if info.Request != nil {
-		info.Request.SetModelName(info.OriginModelName)
+		info.Request.SetModelName(info.ChannelRequestModel())
 	}
+}
+
+func (info *RelayInfo) ChannelRequestModel() string {
+	if info.ChannelMeta == nil {
+		return info.OriginModelName
+	}
+	return info.ChannelSetting.BodyTextReplacement.Replace(info.OriginModelName)
 }
 
 func (info *RelayInfo) ToString() string {
@@ -1200,6 +1207,18 @@ func SetJSONMember(doc *ojson.Doc, parent, key string, value any) error {
 		}
 	}
 	return doc.Set(path, value)
+}
+
+// TaskResubmitOutcome carries a plugin-driven replacement submission after the
+// upstream reported FAILURE. The host swaps the stored upstream task ID for
+// UpstreamTaskID and keeps the public task non-terminal, so polling and
+// retrieval continue on the same public task ID. Immediate holds a terminal
+// result when the replacement completed synchronously.
+type TaskResubmitOutcome struct {
+	UpstreamTaskID string
+	TaskData       []byte
+	PluginState    []byte
+	Immediate      *TaskInfo
 }
 
 // RemoveDisabledFields 从请求 JSON 数据中移除渠道设置中禁用的字段

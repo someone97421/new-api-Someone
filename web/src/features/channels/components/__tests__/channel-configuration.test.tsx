@@ -3804,7 +3804,7 @@ test.each([true, false])(
   }
 )
 
-test('OpenAI video endpoints can be edited alongside channel file relay and request plugins', async () => {
+test('OpenAI video endpoints save alongside file relay, request plugins and body text replacement', async () => {
   editingChannel.settings = JSON.stringify({
     video_task_endpoints: { submit_path: '/custom/videos' },
   })
@@ -3812,6 +3812,10 @@ test('OpenAI video endpoints can be edited alongside channel file relay and requ
     file_relay: { enabled: true, strict: false },
     request_plugins: ['rp_gone0000'],
     tls_insecure_skip_verify: true,
+    body_text_replacement: {
+      enabled: true,
+      rules: [{ from: 'legacy', to: 'current' }],
+    },
   })
   const put = vi
     .spyOn(api, 'put')
@@ -3845,6 +3849,10 @@ test('OpenAI video endpoints can be edited alongside channel file relay and requ
     file_relay: { enabled: true, strict: false },
     request_plugins: ['rp_gone0000'],
     tls_insecure_skip_verify: true,
+    body_text_replacement: {
+      enabled: true,
+      rules: [{ from: 'legacy', to: 'current' }],
+    },
   })
 })
 
@@ -3857,4 +3865,175 @@ test('Non-OpenAI providers do not show video endpoint overrides', async () => {
   expect(
     screen.queryByRole('group', { name: 'Video task endpoints' })
   ).not.toBeInTheDocument()
+})
+
+test.each([false, true])(
+  'body text replacement defaults off and saves empty rules when enabled is %s',
+  async (enabled) => {
+    const put = vi
+      .spyOn(api, 'put')
+      .mockResolvedValue({ data: { success: true } })
+    const user = userEvent.setup()
+    render(<ConfigurationHarness currentRow={editingChannel} />)
+    await screen.findByDisplayValue('Existing channel')
+    await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+    const toggle = screen.getByRole('switch', {
+      name: 'Request body text replacement',
+    })
+    expect(toggle).not.toBeChecked()
+    expect(screen.queryByRole('textbox', { name: 'Original text' })).toBeNull()
+    if (enabled) {
+      toggle.focus()
+      await user.keyboard(' ')
+      expect(toggle).toBeChecked()
+    }
+    await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+    await waitFor(() => expect(put).toHaveBeenCalled())
+    const payload = put.mock.calls[0]?.[1] as { setting: string }
+    expect(JSON.parse(payload.setting).body_text_replacement).toEqual({
+      enabled,
+      rules: [],
+    })
+  }
+)
+
+test('body text rules restore, keep literal order and empty replacement, and survive disabling with unknown settings', async () => {
+  editingChannel.setting = JSON.stringify({
+    future_option: { mode: 'keep' },
+    body_text_replacement: {
+      enabled: true,
+      future_option: 'keep',
+      rules: [
+        { from: 'Model-', to: 'model-' },
+        { from: 'discard', to: 'unused' },
+      ],
+    },
+  })
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+  const toggle = screen.getByRole('switch', {
+    name: 'Request body text replacement',
+  })
+  expect(toggle).toBeChecked()
+  expect(
+    screen.getAllByRole('textbox', { name: 'Original text' })[0]
+  ).toHaveValue('Model-')
+  await user.click(screen.getByRole('button', { name: 'Add rule' }))
+  fireEvent.change(
+    screen.getAllByRole('textbox', { name: 'Original text' })[2],
+    {
+      target: { value: ' model-\n' },
+    }
+  )
+  await user.click(screen.getAllByRole('button', { name: 'Delete rule' })[1])
+  await user.click(toggle)
+  expect(toggle).not.toBeChecked()
+  expect(
+    screen.getAllByRole('textbox', { name: 'Original text' })
+  ).toHaveLength(2)
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  const payload = put.mock.calls[0]?.[1] as { setting: string }
+  expect(JSON.parse(payload.setting)).toMatchObject({
+    future_option: { mode: 'keep' },
+    body_text_replacement: {
+      enabled: false,
+      future_option: 'keep',
+      rules: [
+        { from: 'Model-', to: 'model-' },
+        { from: ' model-\n', to: '' },
+      ],
+    },
+  })
+})
+
+test('an empty original text blocks saving and marks the field invalid even when replacement is off', async () => {
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+  await user.click(screen.getByRole('button', { name: 'Add rule' }))
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  expect(await screen.findByText('Original text cannot be empty')).toBeVisible()
+  expect(
+    screen.getByRole('textbox', { name: 'Original text' })
+  ).toHaveAttribute('aria-invalid', 'true')
+  expect(put).not.toHaveBeenCalled()
+})
+
+test('switching to a channel without body text settings clears the previous rules and enabled state', async () => {
+  editingChannel.setting = JSON.stringify({
+    body_text_replacement: {
+      enabled: true,
+      rules: [{ from: 'first-channel', to: '' }],
+    },
+  })
+  const nextChannel = {
+    ...editingChannel,
+    id: 43,
+    name: 'Next channel',
+    setting: '',
+  }
+  const originalGet = vi.mocked(api.get).getMockImplementation()
+  vi.mocked(api.get).mockImplementation(async (url, config) => {
+    if (url === '/api/channel/43') {
+      return { data: { success: true, data: nextChannel } }
+    }
+    return originalGet?.(url, config)
+  })
+  const user = userEvent.setup()
+  const view = render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+  expect(screen.getByRole('textbox', { name: 'Original text' })).toHaveValue(
+    'first-channel'
+  )
+  view.rerender(<ConfigurationHarness currentRow={nextChannel} />)
+  await screen.findByDisplayValue('Next channel')
+  await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+  expect(
+    screen.getByRole('switch', { name: 'Request body text replacement' })
+  ).not.toBeChecked()
+  expect(screen.queryByRole('textbox', { name: 'Original text' })).toBeNull()
+})
+
+test('body text replacement controls respect existing sensitive channel write restrictions', async () => {
+  editingChannel.setting = JSON.stringify({
+    body_text_replacement: {
+      enabled: true,
+      rules: [{ from: 'saved', to: '' }],
+    },
+  })
+  useAuthStore.setState({
+    auth: {
+      ...originalAuth,
+      user: {
+        id: 10,
+        username: 'operator',
+        role: ROLE.ADMIN,
+        permissions: {
+          admin_permissions: { channel: { read: true, write: true } },
+        },
+      },
+    },
+  })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+  expect(
+    screen.getByRole('switch', { name: 'Request body text replacement' })
+  ).toHaveAttribute('aria-disabled', 'true')
+  expect(screen.getByRole('textbox', { name: 'Original text' })).toBeDisabled()
+  expect(screen.getByRole('textbox', { name: 'Replace with' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Add rule' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Delete rule' })).toBeDisabled()
 })

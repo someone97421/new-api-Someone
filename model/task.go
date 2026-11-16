@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	commonRelay "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"gorm.io/gorm"
 )
 
 type TaskStatus string
@@ -22,7 +23,7 @@ func (t TaskStatus) ToVideoStatus() string {
 	switch t {
 	case TaskStatusNotStart, TaskStatusQueued, TaskStatusSubmitted:
 		status = dto.VideoStatusQueued
-	case TaskStatusInProgress:
+	case TaskStatusInProgress, TaskStatusResubmitting:
 		status = dto.VideoStatusInProgress
 	case TaskStatusSuccess:
 		status = dto.VideoStatusCompleted
@@ -35,13 +36,14 @@ func (t TaskStatus) ToVideoStatus() string {
 }
 
 const (
-	TaskStatusNotStart   TaskStatus = "NOT_START"
-	TaskStatusSubmitted             = "SUBMITTED"
-	TaskStatusQueued                = "QUEUED"
-	TaskStatusInProgress            = "IN_PROGRESS"
-	TaskStatusFailure               = "FAILURE"
-	TaskStatusSuccess               = "SUCCESS"
-	TaskStatusUnknown               = "UNKNOWN"
+	TaskStatusNotStart     TaskStatus = "NOT_START"
+	TaskStatusSubmitted               = "SUBMITTED"
+	TaskStatusQueued                  = "QUEUED"
+	TaskStatusInProgress              = "IN_PROGRESS"
+	TaskStatusResubmitting            = "RESUBMITTING"
+	TaskStatusFailure                 = "FAILURE"
+	TaskStatusSuccess                 = "SUCCESS"
+	TaskStatusUnknown                 = "UNKNOWN"
 )
 
 // TaskRefundLegacyCutoff separates tasks created before timeout refunds were
@@ -132,6 +134,9 @@ type TaskPrivateData struct {
 	PluginState json.RawMessage `json:"plugin_state,omitempty"`
 	// PollFailures counts consecutive unrecognized or transient poll outcomes.
 	PollFailures int `json:"poll_failures,omitempty"`
+	// Resubmits counts plugin-driven same-channel resubmissions after the
+	// upstream reported FAILURE. The host caps it at service.MaxTaskPluginResubmits.
+	Resubmits int `json:"resubmits,omitempty"`
 	// ResultDiscarded marks an immediate terminal result whose submit route
 	// declared retainResult: false. The upstream snapshot was never written
 	// and every retrieval surface treats the task as not found. The zero
@@ -241,7 +246,7 @@ func (p TaskPrivateData) Value() (driver.Value, error) {
 	if p.Key == "" && p.UpstreamTaskID == "" && p.ResultURL == "" &&
 		p.Execution == nil && p.BillingSource == "" && p.SubscriptionId == 0 &&
 		p.TokenId == 0 && p.NodeName == "" && p.BillingContext == nil &&
-		!p.ResponsesBackground && len(p.PluginState) == 0 && p.PollFailures == 0 &&
+		!p.ResponsesBackground && len(p.PluginState) == 0 && p.PollFailures == 0 && p.Resubmits == 0 &&
 		!p.ResultDiscarded && p.RequestPlugins == nil {
 		return nil, nil
 	}
@@ -531,15 +536,17 @@ func (Task *Task) InsertWithContext(ctx context.Context, omitColumns ...string) 
 }
 
 type taskSnapshot struct {
-	Status       TaskStatus
-	Progress     string
-	StartTime    int64
-	FinishTime   int64
-	FailReason   string
-	ResultURL    string
-	Data         json.RawMessage
-	PluginState  json.RawMessage
-	PollFailures int
+	Status         TaskStatus
+	Progress       string
+	StartTime      int64
+	FinishTime     int64
+	FailReason     string
+	ResultURL      string
+	Data           json.RawMessage
+	PluginState    json.RawMessage
+	PollFailures   int
+	UpstreamTaskID string
+	Resubmits      int
 }
 
 func (s taskSnapshot) Equal(other taskSnapshot) bool {
@@ -551,20 +558,24 @@ func (s taskSnapshot) Equal(other taskSnapshot) bool {
 		s.ResultURL == other.ResultURL &&
 		bytes.Equal(s.Data, other.Data) &&
 		bytes.Equal(s.PluginState, other.PluginState) &&
-		s.PollFailures == other.PollFailures
+		s.PollFailures == other.PollFailures &&
+		s.UpstreamTaskID == other.UpstreamTaskID &&
+		s.Resubmits == other.Resubmits
 }
 
 func (t *Task) Snapshot() taskSnapshot {
 	return taskSnapshot{
-		Status:       t.Status,
-		Progress:     t.Progress,
-		StartTime:    t.StartTime,
-		FinishTime:   t.FinishTime,
-		FailReason:   t.FailReason,
-		ResultURL:    t.PrivateData.ResultURL,
-		Data:         t.Data,
-		PluginState:  t.PrivateData.PluginState,
-		PollFailures: t.PrivateData.PollFailures,
+		Status:         t.Status,
+		Progress:       t.Progress,
+		StartTime:      t.StartTime,
+		FinishTime:     t.FinishTime,
+		FailReason:     t.FailReason,
+		ResultURL:      t.PrivateData.ResultURL,
+		Data:           t.Data,
+		PluginState:    t.PrivateData.PluginState,
+		PollFailures:   t.PrivateData.PollFailures,
+		UpstreamTaskID: t.GetUpstreamTaskID(),
+		Resubmits:      t.PrivateData.Resubmits,
 	}
 }
 
@@ -593,6 +604,30 @@ func (t *Task) UpdateWithStatus(fromStatus TaskStatus) (bool, error) {
 		return false, result.Error
 	}
 	return result.RowsAffected > 0, nil
+}
+
+// ClaimForResubmit changes status before any external submission; the HTTP
+// request runs after the transaction releases its row lock.
+func (t *Task) ClaimForResubmit(ctx context.Context, fromStatus TaskStatus, upstreamID string, resubmits int) (bool, error) {
+	if fromStatus == "" || fromStatus == TaskStatusSuccess || fromStatus == TaskStatusFailure || fromStatus == TaskStatusResubmitting {
+		return false, nil
+	}
+	claimed := false
+	err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current Task
+		exists, err := RecordExist(lockForUpdate(tx).Where("id = ? AND status = ?", t.ID, fromStatus).First(&current).Error)
+		if err != nil || !exists {
+			return err
+		}
+		if current.GetUpstreamTaskID() != upstreamID || current.PrivateData.Resubmits != resubmits {
+			return nil
+		}
+		result := tx.Model(&Task{}).Where("id = ? AND status = ?", t.ID, fromStatus).
+			Updates(map[string]any{"status": TaskStatusResubmitting, "updated_at": time.Now().Unix()})
+		claimed = result.RowsAffected > 0
+		return result.Error
+	})
+	return claimed, err
 }
 
 // TaskBulkUpdateByID performs an unconditional bulk UPDATE by primary key IDs.

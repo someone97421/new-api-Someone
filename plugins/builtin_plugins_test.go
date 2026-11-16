@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var expectedKeys = []string{"alibaba", "doubao", "google", "hailuo", "jimeng", "jingyu", "kling", "rh-reverse", "sora", "sunoapi", "vertex-ai", "vidu", "xai"}
+var expectedKeys = []string{"alibaba", "doubao", "google", "hailuo", "jimeng", "jimeng-reverse", "jingyu", "kling", "libtv", "lovart", "magnific", "magnific-reverse", "rh-reverse", "sora", "sunoapi", "vertex-ai", "vidu", "xai", "xyq"}
 var responsePluginKeys = []string{"alibaba", "doubao", "google", "hailuo", "jimeng", "kling", "sora", "sunoapi", "vertex-ai", "vidu", "xai"}
 
 // The built-in request processing plugins and the stage hooks each exports.

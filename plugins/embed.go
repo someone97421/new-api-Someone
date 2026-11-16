@@ -9,7 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 )
 
-//go:embed tasks
+//go:embed tasks shared/any2api.js
 var taskPlugins embed.FS
 
 func init() {
@@ -43,6 +43,15 @@ func Source(key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	switch key {
+	case "libtv", "xyq", "jimeng-reverse", "magnific-reverse":
+		shared, sharedErr := taskPlugins.ReadFile("shared/any2api.js")
+		if sharedErr != nil {
+			return "", sharedErr
+		}
+		return string(shared) + "\n" + string(source), nil
+	}
+
 	return string(source), nil
 }
 

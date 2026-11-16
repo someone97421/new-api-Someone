@@ -314,6 +314,14 @@ func TestDisableFactoryOverrideRowSuppressesBothLayers(t *testing.T) {
 	// a built-in kling model only by case must upload without a routing conflict.
 	recorder = postTaskPluginStatus(t, "kling", "", `{"enabled":false}`)
 	require.Contains(t, recorder.Body.String(), `"success":true`)
+	// The fork ships the jingyu built-in, which also claims the kling models;
+	// disable it so the shadow upload only exercises the kling layers.
+	recorder = postTaskPluginStatus(t, "jingyu", "", `{"enabled":false}`)
+	require.Contains(t, recorder.Body.String(), `"success":true`)
+	t.Cleanup(func() {
+		recorder := postTaskPluginStatus(t, "jingyu", "", `{"enabled":true}`)
+		require.Contains(t, recorder.Body.String(), `"success":true`)
+	})
 	cleanupTaskPluginControllerRuntime(t, "kling-shadow")
 	const shadowSource = `
 export const meta = {apiVersion: 1, key: "kling-shadow", name: "Shadow", version: "1.0.0", author: {name: "Test"}, models: ["KLING-V1"], fetchMode: "per_task"};

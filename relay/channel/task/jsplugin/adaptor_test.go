@@ -3050,3 +3050,184 @@ export function buildContentRequest(ctx) {
 		})
 	}
 }
+
+func TestTaskAdaptorResubmitTask(t *testing.T) {
+	service.InitHttpClient()
+	var posted map[string]any
+	base := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/resubmit" && r.Method == http.MethodPost {
+			assert.Equal(t, "Bearer key", r.Header.Get("Authorization"))
+			body, _ := io.ReadAll(r.Body)
+			require.NoError(t, common.Unmarshal(body, &posted))
+			_, _ = w.Write([]byte(`{"id":"t2","status":"submitted"}`))
+			return
+		}
+		t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+	}))
+	defer base.Close()
+	source := mockPlugin + `
+export function buildResubmitRequest(ctx, failure) {
+  if (!ctx.state || !ctx.state.resubmit) return {};
+  return { url: ctx.baseUrl + "/resubmit", method: "POST", headers: {Authorization: "Bearer " + ctx.apiKey, "Content-Type": "application/json"}, body: ctx.state.resubmit.body };
+}
+`
+	plugin, err := pluginruntime.NewRegistry().Register(source, pluginruntime.Options{})
+	require.NoError(t, err)
+	adaptor := New(plugin)
+	adaptor.Init(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: base.URL, ApiKey: "key"}})
+	task := &model.Task{TaskID: "pub-1", Status: model.TaskStatusInProgress, Action: "text_to_video"}
+	task.PrivateData.UpstreamTaskID = "t1"
+	task.PrivateData.PluginState = []byte(`{"resubmit":{"kind":"video","body":{"prompt":"a cat"},"attempts":0}}`)
+
+	outcome, err := adaptor.ResubmitTask(t.Context(), task, &relaycommon.TaskInfo{Status: "FAILURE", Reason: "upstream overloaded"})
+	require.NoError(t, err)
+	require.NotNil(t, outcome)
+	assert.Equal(t, "t2", outcome.UpstreamTaskID)
+	assert.Nil(t, outcome.Immediate)
+	assert.Equal(t, map[string]any{"prompt": "a cat"}, posted)
+	// mockPlugin's parseSubmitResponse returns no state; the previous state must
+	// be preserved so the resubmit capability survives further rounds.
+	assert.JSONEq(t, `{"resubmit":{"kind":"video","body":{"prompt":"a cat"},"attempts":0}}`, string(outcome.PluginState))
+
+	// A plugin that has no resubmit state declines by returning an empty object.
+	task.PrivateData.PluginState = []byte(`{}`)
+	outcome, err = adaptor.ResubmitTask(t.Context(), task, &relaycommon.TaskInfo{Status: "FAILURE", Reason: "upstream overloaded"})
+	require.NoError(t, err)
+	assert.Nil(t, outcome)
+
+	// A plugin without the hook declines as well.
+	plain, err := pluginruntime.NewRegistry().Register(mockPlugin, pluginruntime.Options{})
+	require.NoError(t, err)
+	plainAdaptor := New(plain)
+	plainAdaptor.Init(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: base.URL, ApiKey: "key"}})
+	outcome, err = plainAdaptor.ResubmitTask(t.Context(), task, &relaycommon.TaskInfo{Status: "FAILURE"})
+	require.NoError(t, err)
+	assert.Nil(t, outcome)
+}
+
+func TestTaskAdaptorResubmitTaskValidatesHost(t *testing.T) {
+	service.InitHttpClient()
+	source := mockPlugin + `
+export function buildResubmitRequest(ctx, failure) {
+  return { url: "https://evil.example/resubmit", method: "POST", body: {} };
+}
+`
+	plugin, err := pluginruntime.NewRegistry().Register(source, pluginruntime.Options{})
+	require.NoError(t, err)
+	adaptor := New(plugin)
+	adaptor.Init(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: "https://provider.example", ApiKey: "key"}})
+	task := &model.Task{TaskID: "pub-1", Status: model.TaskStatusInProgress, Action: "text_to_video"}
+	task.PrivateData.UpstreamTaskID = "t1"
+	_, err = adaptor.ResubmitTask(t.Context(), task, &relaycommon.TaskInfo{Status: "FAILURE"})
+	require.ErrorContains(t, err, "not allowed")
+}
+
+func TestTaskAdaptorResubmitTaskImmediate(t *testing.T) {
+	service.InitHttpClient()
+	base := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"t3","url":"https://cdn.example/v.mp4"}`))
+	}))
+	defer base.Close()
+	source := strings.Replace(mockPlugin, `export function parseSubmitResponse(ctx, resp) {
+  return {
+    taskId: resp.body.id,
+    taskData: {accepted: true, status: resp.statusCode},
+  };
+}`, `export function parseSubmitResponse(ctx, resp) {
+  return {
+    taskId: resp.body.id,
+    taskData: resp.body,
+    immediate: {taskId: resp.body.id, status: "SUCCESS", progress: "100%", url: resp.body.url},
+    state: {resubmit: {kind: "video", body: {prompt: "x"}, attempts: 1}},
+  };
+}`, 1) + `
+export function buildResubmitRequest(ctx, failure) {
+  return { url: ctx.baseUrl + "/resubmit", method: "POST", body: {} };
+}
+`
+	plugin, err := pluginruntime.NewRegistry().Register(source, pluginruntime.Options{})
+	require.NoError(t, err)
+	adaptor := New(plugin)
+	adaptor.Init(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: base.URL, ApiKey: "key"}})
+	task := &model.Task{TaskID: "pub-1", Status: model.TaskStatusInProgress, Action: "text_to_video"}
+	task.PrivateData.UpstreamTaskID = "t1"
+	outcome, err := adaptor.ResubmitTask(t.Context(), task, &relaycommon.TaskInfo{Status: "FAILURE", Reason: "boom"})
+	require.NoError(t, err)
+	require.NotNil(t, outcome)
+	require.NotNil(t, outcome.Immediate)
+	assert.Equal(t, "t3", outcome.UpstreamTaskID)
+	assert.Equal(t, model.TaskStatusSuccess, outcome.Immediate.Status)
+	assert.Equal(t, "https://cdn.example/v.mp4", outcome.Immediate.Url)
+	// extractUsageOnComplete from mockPlugin reports 23 upstream units.
+	assert.Equal(t, 23, outcome.Immediate.TotalTokens)
+	assert.Contains(t, string(outcome.PluginState), `"attempts":1`)
+}
+
+func TestTaskAdaptorBodyTextReplacementAcrossChannels(t *testing.T) {
+	source := `
+export const meta = {apiVersion:1,key:"replace-task",name:"Replace Task",version:"1.0.0",author:{name:"Test"},models:["old-model"],fetchMode:"per_task",requiredCapabilities:["json-order@1"],protocols:["openai_image"],usageSchema:{image_count:{type:"number",unit:"count"}}};
+export const protocols = {openai_image:{decodeRequest(ctx){return {kind:"submit",model:ctx.model,requestBody:ctx.body.value}},render(){return {data:[]}}}};
+export function buildSubmitRequest(ctx){const b = utils.json.clone(ctx.requestBody); b.model = ctx.upstreamModel; return {url:ctx.baseUrl+"/submit",body:b}}
+export function extractUsage(ctx){return {image_count:Number(ctx.requestBody.count)}}
+export function parseSubmitResponse(){return {taskId:"one"}}
+export function buildQueryRequest(){return {}}
+export function parseTaskResult(){return {status:"SUCCESS"}}
+`
+	plugin, err := pluginruntime.NewRegistry().Register(source, pluginruntime.Options{})
+	require.NoError(t, err)
+	raw := `{"model":"old-model","prompt":"old","count":"one","extra":{"z":"old","a":false}}`
+	var value any
+	require.NoError(t, common.Unmarshal([]byte(raw), &value))
+	protocol := pluginruntime.ProtocolRequestContext{
+		RouteRequestContext: pluginruntime.RouteRequestContext{Body: map[string]any{"kind": "json", "value": value}, BodyText: json.RawMessage(raw)},
+		Protocol:            "openai_image", Model: "old-model",
+	}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	c.Set(pluginruntime.ContextKeyPinnedEndpoint, pluginruntime.PinnedEndpoint{Plugin: plugin, Protocol: "openai_image", Model: "old-model"})
+	c.Set(pluginruntime.ContextKeyProtocolRequest, protocol)
+	for _, target := range []string{"first", "second"} {
+		info := &relaycommon.RelayInfo{OriginModelName: "old-model", TaskRelayInfo: &relaycommon.TaskRelayInfo{}, ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelBaseUrl: "https://provider.example", ChannelSetting: dto.ChannelSettings{BodyTextReplacement: &dto.BodyTextReplacement{Enabled: true, Rules: []dto.BodyTextReplacementRule{{From: "old", To: target}, {From: "one", To: "2"}}}},
+		}}
+		c.Set("model_mapping", `{"`+target+`-model":"upstream-model"}`)
+		require.NoError(t, helper.ModelMappedHelper(c, info, nil))
+		adaptor := New(plugin)
+		adaptor.Init(info)
+		require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
+		body, err := adaptor.BuildRequestBody(c, info)
+		require.NoError(t, err)
+		wire, err := io.ReadAll(body)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"model":"upstream-model","prompt":"`+target+`","count":"2","extra":{"z":"`+target+`","a":false}}`, string(wire))
+		facts, err := adaptor.ExtractUsageFactsValidated(c, info)
+		require.NoError(t, err)
+		encoded, err := common.Marshal(facts)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"image_count":2}`, string(encoded))
+		assert.Equal(t, "old-model", info.OriginModelName)
+	}
+}
+
+func TestTaskAdaptorResubmitUsesSubmittingAccount(t *testing.T) {
+	useCredentialTestDB(t, &model.Channel{})
+	service.InitHttpClient()
+	source := strings.ReplaceAll(credentialTaskPlugin, "%KEY%", "task-cred-resubmit") + `
+export function buildResubmitRequest(ctx) {
+  return {url:ctx.baseUrl+"/resubmit",method:"POST",headers:seen(ctx),body:{prompt:"retry"}};
+}`
+	plugin, err := pluginruntime.NewRegistry().Register(source, pluginruntime.Options{})
+	require.NoError(t, err)
+	upstream := newTaskUpstream(t)
+	key := taskCredentialLine(t, plugin.Meta.Key, "tok-1", "acct-1", 0) + "\n" + taskCredentialLine(t, plugin.Meta.Key, "tok-2", "acct-2", 0)
+	adaptor := New(plugin)
+	adaptor.Init(credentialTaskInfo(upstream.URL, key, constant.ChannelTypeTaskPlugin))
+	task := &model.Task{TaskID: "public", PrivateData: model.TaskPrivateData{UpstreamTaskID: "old", CredentialAccount: "acct-2"}}
+	outcome, err := adaptor.ResubmitTask(t.Context(), task, &relaycommon.TaskInfo{Status: model.TaskStatusFailure})
+	require.NoError(t, err)
+	require.NotNil(t, outcome)
+	request := upstream.sent(t, "/resubmit")
+	assert.Equal(t, "Bearer tok-2", request.Header.Get("Authorization"))
+	assert.Equal(t, "tok-2", request.Header.Get("X-Seen-Credential"))
+	assert.Contains(t, request.RawQuery, "account=acct-2")
+}

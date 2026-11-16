@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -1159,4 +1160,268 @@ func TestTaskReportsOnceAtTheFinalState(t *testing.T) {
 	sweepTimedOutTasks(context.Background())
 	sweepTimedOutTasks(context.Background())
 	assert.Equal(t, []string{"report_once:SUCCESS", "fails:FAILURE", "times_out:FAILURE"}, reported)
+}
+
+type resubmittingPollingAdaptor struct {
+	scriptedPollingAdaptor
+	outcome     *relaycommon.TaskResubmitOutcome
+	resubmitErr error
+	resubCalls  int
+	lastFailure *relaycommon.TaskInfo
+	onResubmit  func()
+}
+
+func (a *resubmittingPollingAdaptor) ResubmitTask(_ context.Context, task *model.Task, failure *relaycommon.TaskInfo) (*relaycommon.TaskResubmitOutcome, error) {
+	a.resubCalls++
+	a.lastFailure = failure
+	if a.onResubmit != nil {
+		a.onResubmit()
+	}
+	if a.resubmitErr != nil {
+		return nil, a.resubmitErr
+	}
+	return a.outcome, nil
+}
+
+// failedPollAdaptor returns an adaptor whose poll response parses (via the
+// adaptor, not the New API host format) to a terminal FAILURE.
+func failedPollAdaptor(outcome *relaycommon.TaskResubmitOutcome) *resubmittingPollingAdaptor {
+	return &resubmittingPollingAdaptor{
+		scriptedPollingAdaptor: scriptedPollingAdaptor{
+			statusCode: http.StatusOK,
+			body:       []byte(`{"state":"failed"}`),
+			parse:      &relaycommon.TaskInfo{Status: model.TaskStatusFailure, Reason: "upstream overloaded"},
+		},
+		outcome: outcome,
+	}
+}
+
+func TestUpdateVideoSingleTaskPluginResubmitAsync(t *testing.T) {
+	truncate(t)
+
+	const userID, tokenID, channelID = 710, 710, 710
+	const initialQuota, preConsumed, tokenRemain = 10_000, 4_000, 7_000
+	seedUser(t, userID, initialQuota)
+	seedToken(t, tokenID, userID, "sk-resubmit-async", tokenRemain)
+	ch := &model.Channel{Id: channelID, Type: constant.ChannelTypeKling, Name: "resubmit", Key: "sk-test", Status: common.ChannelStatusEnabled}
+
+	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	task.TaskID = "task_resubmit_async"
+	task.Status = model.TaskStatusInProgress
+	task.Progress = "30%"
+	task.PrivateData.UpstreamTaskID = "upstream_resubmit_old"
+	require.NoError(t, model.DB.Create(task).Error)
+
+	adaptor := failedPollAdaptor(&relaycommon.TaskResubmitOutcome{
+		UpstreamTaskID: "upstream_resubmit_new",
+		TaskData:       []byte(`{"resubmitted":true}`),
+		PluginState:    []byte(`{"attempts":1}`),
+	})
+	require.NoError(t, updateVideoSingleTask(context.Background(), adaptor, ch, task.GetUpstreamTaskID(), map[string]*model.Task{
+		task.GetUpstreamTaskID(): task,
+	}))
+
+	assert.Equal(t, 1, adaptor.resubCalls)
+	require.NotNil(t, adaptor.lastFailure)
+	assert.Equal(t, "upstream overloaded", adaptor.lastFailure.Reason)
+
+	var persisted model.Task
+	require.NoError(t, model.DB.First(&persisted, task.ID).Error)
+	assert.EqualValues(t, model.TaskStatusSubmitted, persisted.Status)
+	assert.Equal(t, "upstream_resubmit_new", persisted.GetUpstreamTaskID())
+	assert.Equal(t, 1, persisted.PrivateData.Resubmits)
+	assert.Zero(t, persisted.PrivateData.PollFailures)
+	assert.JSONEq(t, `{"attempts":1}`, string(persisted.PrivateData.PluginState))
+	assert.JSONEq(t, `{"resubmitted":true}`, string(persisted.Data))
+	// The task is still in flight: no settlement and no refund yet.
+	assert.Equal(t, preConsumed, persisted.Quota)
+	assert.Equal(t, initialQuota, getUserQuota(t, userID))
+	assert.Equal(t, tokenRemain, getTokenRemainQuota(t, tokenID))
+}
+
+func TestUpdateVideoSingleTaskPluginResubmitCap(t *testing.T) {
+	truncate(t)
+
+	const userID, tokenID, channelID = 711, 711, 711
+	const initialQuota, preConsumed, tokenRemain = 10_000, 4_000, 7_000
+	seedUser(t, userID, initialQuota)
+	seedToken(t, tokenID, userID, "sk-resubmit-cap", tokenRemain)
+	ch := &model.Channel{Id: channelID, Type: constant.ChannelTypeKling, Name: "resubmit", Key: "sk-test", Status: common.ChannelStatusEnabled}
+
+	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	task.TaskID = "task_resubmit_cap"
+	task.Status = model.TaskStatusInProgress
+	task.Progress = "30%"
+	task.PrivateData.UpstreamTaskID = "upstream_resubmit_cap"
+	task.PrivateData.Resubmits = MaxTaskPluginResubmits
+	require.NoError(t, model.DB.Create(task).Error)
+
+	adaptor := failedPollAdaptor(&relaycommon.TaskResubmitOutcome{UpstreamTaskID: "upstream_never_used"})
+	require.NoError(t, updateVideoSingleTask(context.Background(), adaptor, ch, task.GetUpstreamTaskID(), map[string]*model.Task{
+		task.GetUpstreamTaskID(): task,
+	}))
+
+	assert.Equal(t, 0, adaptor.resubCalls, "the host cap must stop asking the plugin")
+
+	var persisted model.Task
+	require.NoError(t, model.DB.First(&persisted, task.ID).Error)
+	assert.EqualValues(t, model.TaskStatusFailure, persisted.Status)
+	assert.Equal(t, "upstream overloaded", persisted.FailReason)
+	assert.Equal(t, MaxTaskPluginResubmits, persisted.PrivateData.Resubmits)
+	// Ordinary failure path: refund exactly once.
+	assert.Zero(t, persisted.Quota)
+	assert.Equal(t, initialQuota+preConsumed, getUserQuota(t, userID))
+	assert.Equal(t, tokenRemain+preConsumed, getTokenRemainQuota(t, tokenID))
+	assert.Equal(t, int64(1), countLogs(t))
+}
+
+func TestUpdateVideoSingleTaskPluginResubmitImmediateSuccess(t *testing.T) {
+	truncate(t)
+
+	const userID, tokenID, channelID = 712, 712, 712
+	const initialQuota, preConsumed, tokenRemain = 10_000, 4_000, 7_000
+	seedUser(t, userID, initialQuota)
+	seedToken(t, tokenID, userID, "sk-resubmit-sync", tokenRemain)
+	ch := &model.Channel{Id: channelID, Type: constant.ChannelTypeKling, Name: "resubmit", Key: "sk-test", Status: common.ChannelStatusEnabled}
+
+	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	task.TaskID = "task_resubmit_sync"
+	task.Status = model.TaskStatusInProgress
+	task.Progress = "30%"
+	task.PrivateData.UpstreamTaskID = "upstream_resubmit_old"
+	require.NoError(t, model.DB.Create(task).Error)
+
+	adaptor := failedPollAdaptor(&relaycommon.TaskResubmitOutcome{
+		UpstreamTaskID: "upstream_resubmit_new",
+		PluginState:    []byte(`{"attempts":1}`),
+		Immediate: &relaycommon.TaskInfo{
+			TaskID:   "upstream_resubmit_new",
+			Status:   model.TaskStatusSuccess,
+			Url:      "https://cdn.example/resubmitted.mp4",
+			Progress: "100%",
+		},
+	})
+	require.NoError(t, updateVideoSingleTask(context.Background(), adaptor, ch, task.GetUpstreamTaskID(), map[string]*model.Task{
+		task.GetUpstreamTaskID(): task,
+	}))
+
+	assert.Equal(t, 1, adaptor.resubCalls)
+
+	var persisted model.Task
+	require.NoError(t, model.DB.First(&persisted, task.ID).Error)
+	assert.EqualValues(t, model.TaskStatusSuccess, persisted.Status)
+	assert.Equal(t, "upstream_resubmit_new", persisted.GetUpstreamTaskID())
+	assert.Equal(t, 1, persisted.PrivateData.Resubmits)
+	assert.Equal(t, "https://cdn.example/resubmitted.mp4", persisted.GetResultURL())
+	assert.JSONEq(t, `{"attempts":1}`, string(persisted.PrivateData.PluginState))
+}
+
+func TestUpdateVideoSingleTaskPluginResubmitErrorKeepsFailure(t *testing.T) {
+	truncate(t)
+
+	const userID, tokenID, channelID = 713, 713, 713
+	const initialQuota, preConsumed, tokenRemain = 10_000, 4_000, 7_000
+	seedUser(t, userID, initialQuota)
+	seedToken(t, tokenID, userID, "sk-resubmit-err", tokenRemain)
+	ch := &model.Channel{Id: channelID, Type: constant.ChannelTypeKling, Name: "resubmit", Key: "sk-test", Status: common.ChannelStatusEnabled}
+
+	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	task.TaskID = "task_resubmit_err"
+	task.Status = model.TaskStatusInProgress
+	task.Progress = "30%"
+	task.PrivateData.UpstreamTaskID = "upstream_resubmit_err"
+	require.NoError(t, model.DB.Create(task).Error)
+
+	adaptor := failedPollAdaptor(&relaycommon.TaskResubmitOutcome{UpstreamTaskID: "upstream_never_used"})
+	adaptor.resubmitErr = fmt.Errorf("boom")
+	require.NoError(t, updateVideoSingleTask(context.Background(), adaptor, ch, task.GetUpstreamTaskID(), map[string]*model.Task{
+		task.GetUpstreamTaskID(): task,
+	}))
+
+	assert.Equal(t, 1, adaptor.resubCalls)
+
+	var persisted model.Task
+	require.NoError(t, model.DB.First(&persisted, task.ID).Error)
+	assert.EqualValues(t, model.TaskStatusFailure, persisted.Status)
+	assert.Equal(t, "upstream overloaded", persisted.FailReason)
+	assert.Equal(t, "upstream_resubmit_err", persisted.GetUpstreamTaskID())
+	assert.Zero(t, persisted.PrivateData.Resubmits)
+	assert.Equal(t, initialQuota+preConsumed, getUserQuota(t, userID))
+}
+
+func TestTaskResubmitClaimPreventsDuplicateSubmission(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		outcome    *relaycommon.TaskResubmitOutcome
+		err        error
+		wantStatus model.TaskStatus
+	}{
+		{name: "async", outcome: &relaycommon.TaskResubmitOutcome{UpstreamTaskID: "replacement"}, wantStatus: model.TaskStatusSubmitted},
+		{name: "immediate", outcome: &relaycommon.TaskResubmitOutcome{UpstreamTaskID: "replacement", Immediate: &relaycommon.TaskInfo{Status: model.TaskStatusSuccess, Url: "https://cdn.example/result.mp4"}}, wantStatus: model.TaskStatusSuccess},
+		{name: "declined", wantStatus: model.TaskStatusFailure},
+		{name: "error", err: fmt.Errorf("upstream unavailable"), wantStatus: model.TaskStatusFailure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			truncate(t)
+			previousReport := ReportTaskFunc
+			reports := 0
+			ReportTaskFunc = func(*model.Task) { reports++ }
+			t.Cleanup(func() { ReportTaskFunc = previousReport })
+			const userID, tokenID, channelID = 714, 714, 714
+			const balance, reserved, tokenQuota = 10_000, 1_000, 7_000
+			seedUser(t, userID, balance)
+			seedToken(t, tokenID, userID, "sk-claim", tokenQuota)
+			ch := &model.Channel{Id: channelID, Type: constant.ChannelTypeKling, Name: "claim", Key: "key", Status: common.ChannelStatusEnabled}
+			task := makeTask(userID, channelID, reserved, tokenID, BillingSourceWallet, 0)
+			task.TaskID = "task_claim"
+			task.Status = model.TaskStatusSubmitted
+			task.PrivateData.UpstreamTaskID = "original"
+			task.PrivateData.BillingContext.PerCallBilling = true
+			task.PrivateData.RequestPlugins = &model.TaskRequestPlugins{Instances: []string{"audit"}}
+			require.NoError(t, model.DB.Create(task).Error)
+			second, late := *task, *task
+			adaptor := failedPollAdaptor(tc.outcome)
+			adaptor.resubmitErr = tc.err
+			adaptor.onResubmit = func() {
+				adaptor.onResubmit = nil
+				require.NoError(t, updateVideoSingleTask(t.Context(), adaptor, ch, "original", map[string]*model.Task{"original": &second}))
+				assert.Equal(t, model.TaskStatus(model.TaskStatusResubmitting), second.Status)
+				assert.Equal(t, balance, getUserQuota(t, userID))
+				assert.Zero(t, countLogs(t))
+			}
+			require.NoError(t, updateVideoSingleTask(t.Context(), adaptor, ch, "original", map[string]*model.Task{"original": task}))
+			require.NoError(t, updateVideoSingleTask(t.Context(), adaptor, ch, "original", map[string]*model.Task{"original": &second}))
+			require.NoError(t, updateVideoSingleTask(t.Context(), adaptor, ch, "original", map[string]*model.Task{"original": &late}))
+			assert.Equal(t, 1, adaptor.resubCalls)
+			var stored model.Task
+			require.NoError(t, model.DB.First(&stored, task.ID).Error)
+			assert.Equal(t, tc.wantStatus, stored.Status)
+			assert.Equal(t, stored.GetUpstreamTaskID(), second.GetUpstreamTaskID())
+			assert.Equal(t, stored.GetUpstreamTaskID(), late.GetUpstreamTaskID())
+			if tc.outcome != nil {
+				assert.Equal(t, "replacement", stored.GetUpstreamTaskID())
+				assert.Equal(t, 1, stored.PrivateData.Resubmits)
+				assert.Equal(t, reserved, stored.Quota)
+				assert.Equal(t, balance, getUserQuota(t, userID))
+				assert.Equal(t, tokenQuota, getTokenRemainQuota(t, tokenID))
+				if tc.wantStatus == model.TaskStatusSubmitted {
+					assert.Empty(t, stored.Data)
+				}
+			} else {
+				assert.Zero(t, stored.Quota)
+				assert.Equal(t, balance+reserved, getUserQuota(t, userID))
+				assert.Equal(t, tokenQuota+reserved, getTokenRemainQuota(t, tokenID))
+			}
+			if tc.wantStatus == model.TaskStatusFailure {
+				assert.EqualValues(t, 1, countLogs(t))
+			} else {
+				assert.Zero(t, countLogs(t))
+			}
+			if tc.wantStatus == model.TaskStatusSubmitted {
+				assert.Zero(t, reports)
+			} else {
+				assert.Equal(t, 1, reports)
+			}
+		})
+	}
 }

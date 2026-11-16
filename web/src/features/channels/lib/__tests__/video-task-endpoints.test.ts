@@ -117,3 +117,31 @@ test.each([
     }
   }
 )
+
+test('Video endpoints, file relay and body replacement survive create and update with unknown settings', () => {
+  const setting = {
+    file_relay: { enabled: true, strict: false },
+    body_text_replacement: {
+      enabled: true,
+      rules: [{ from: 'legacy', to: '' }],
+      future_option: 'keep',
+    },
+    request_plugins: ['rp_saved'],
+    future_option: { enabled: false },
+  }
+  const values = channelFormSchema.parse(
+    transformChannelToFormDefaults({
+      ...channel,
+      setting: JSON.stringify(setting),
+    })
+  )
+  const create = transformFormDataToCreatePayload(values)
+  const update = transformFormDataToUpdatePayload(values, channel.id)
+  for (const payload of [create.channel, update]) {
+    expect(JSON.parse(payload.setting ?? '{}')).toMatchObject(setting)
+    expect(JSON.parse(payload.settings ?? '{}')).toMatchObject({
+      video_task_endpoints: endpoints,
+      vendor_extension: { enabled: false },
+    })
+  }
+})

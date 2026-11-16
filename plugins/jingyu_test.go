@@ -419,3 +419,90 @@ func TestJingyuVideoLifecycleAndContent(t *testing.T) {
 		assert.Equal(t, jsplugin.RouteTypeContent, binding.Route.Type)
 	}
 }
+
+func TestJingyuResubmitFlow(t *testing.T) {
+	plugin := newJingyuPlugin(t)
+	imageSubmitCtx := map[string]any{
+		"action": "text_to_image", "model": "client-alias", "upstreamModel": "gpt-image-2.5-sunburst",
+		"requestBody": map[string]any{"model": "gpt-image-2.5-sunburst", "prompt": "a cat", "async": true, "task_count": 1, "response_format": "url"},
+	}
+	value, err := plugin.Engine.Call(t.Context(), "parseSubmitResponse", imageSubmitCtx, map[string]any{
+		"statusCode": 200, "headers": map[string]any{}, "body": map[string]any{"task_id": "t1", "status": "submitted"},
+	})
+	require.NoError(t, err)
+	parsed := jingyuObject(t, value)
+	require.Contains(t, parsed, "state", "submit parse must persist the resubmit state")
+	state := parsed["state"].(map[string]any)["resubmit"].(map[string]any)
+	assert.Equal(t, "image", state["kind"])
+	assert.Equal(t, float64(0), state["attempts"])
+	assert.Equal(t, "a cat", state["body"].(map[string]any)["prompt"])
+
+	pollCtx := map[string]any{
+		"action": "text_to_image", "model": "client-alias", "upstreamModel": "gpt-image-2.5-sunburst",
+		"baseUrl": "https://jingyu.test/", "apiKey": "k",
+		"state": map[string]any{"resubmit": state},
+	}
+	value, err = plugin.Engine.Call(t.Context(), "buildResubmitRequest", pollCtx, map[string]any{"status": "FAILURE", "reason": "upstream overloaded"})
+	require.NoError(t, err)
+	descriptor := jingyuObject(t, value)
+	assert.Equal(t, "https://jingyu.test/v1/image/generations", descriptor["url"])
+	assert.Equal(t, "POST", descriptor["method"])
+	assert.Equal(t, "Bearer k", descriptor["headers"].(map[string]any)["Authorization"])
+	resubmitBody := descriptor["body"].(map[string]any)
+	assert.Equal(t, "gpt-image-2.5-sunburst", resubmitBody["model"])
+	assert.Equal(t, "a cat", resubmitBody["prompt"])
+
+	for _, tc := range []struct {
+		name    string
+		ctx     map[string]any
+		failure map[string]any
+	}{
+		{"content policy", pollCtx, map[string]any{"status": "FAILURE", "reason": "rejected by content policy"}},
+		{"validation", pollCtx, map[string]any{"status": "FAILURE", "reason": "prompt is required"}},
+		{"attempts exhausted", map[string]any{
+			"action": "text_to_image", "model": "client-alias", "upstreamModel": "gpt-image-2.5-sunburst",
+			"baseUrl": "https://jingyu.test/", "apiKey": "k",
+			"state": map[string]any{"resubmit": map[string]any{"kind": "image", "body": state["body"], "attempts": 2}},
+		}, map[string]any{"status": "FAILURE", "reason": "upstream overloaded"}},
+		{"no state", map[string]any{
+			"action": "text_to_image", "model": "client-alias", "baseUrl": "https://jingyu.test/", "apiKey": "k",
+		}, map[string]any{"status": "FAILURE", "reason": "upstream overloaded"}},
+	} {
+		t.Run("decline/"+tc.name, func(t *testing.T) {
+			declined, err := plugin.Engine.Call(t.Context(), "buildResubmitRequest", tc.ctx, tc.failure)
+			require.NoError(t, err)
+			assert.Empty(t, jingyuObject(t, declined))
+		})
+	}
+
+	// 重提响应的解析上下文没有 requestBody，只有继承的 state：次数必须 +1。
+	value, err = plugin.Engine.Call(t.Context(), "parseSubmitResponse", pollCtx, map[string]any{
+		"statusCode": 200, "headers": map[string]any{}, "body": map[string]any{"task_id": "t2", "status": "submitted"},
+	})
+	require.NoError(t, err)
+	reState := jingyuObject(t, value)["state"].(map[string]any)["resubmit"].(map[string]any)
+	assert.Equal(t, float64(1), reState["attempts"])
+	assert.Equal(t, "a cat", reState["body"].(map[string]any)["prompt"])
+
+	// 无文件上传的视频提交也存重提状态；带 multipart 上传的无法重建，必须不存。
+	videoSubmitCtx := map[string]any{
+		"action": "text_to_video", "model": "sora-2", "upstreamModel": "sora-2",
+		"requestBody": map[string]any{"payload": map[string]any{"model": "sora-2", "prompt": "a cat", "duration": 15}},
+	}
+	value, err = plugin.Engine.Call(t.Context(), "parseSubmitResponse", videoSubmitCtx, map[string]any{
+		"statusCode": 200, "headers": map[string]any{}, "body": map[string]any{"task_id": "v1", "status": "submitted"},
+	})
+	require.NoError(t, err)
+	videoState := jingyuObject(t, value)["state"].(map[string]any)["resubmit"].(map[string]any)
+	assert.Equal(t, "video", videoState["kind"])
+
+	videoSubmitCtx["requestBody"] = map[string]any{
+		"payload": map[string]any{"model": "sora-2", "prompt": "a cat", "duration": 15},
+		"uploads": []any{map[string]any{"key": "input_reference", "ref": "input_reference[0]", "filename": "cat.png"}},
+	}
+	value, err = plugin.Engine.Call(t.Context(), "parseSubmitResponse", videoSubmitCtx, map[string]any{
+		"statusCode": 200, "headers": map[string]any{}, "body": map[string]any{"task_id": "v1", "status": "submitted"},
+	})
+	require.NoError(t, err)
+	assert.NotContains(t, jingyuObject(t, value), "state", "multipart uploads cannot be reconstructed for resubmission")
+}

@@ -79,8 +79,15 @@ export type ProtocolClaim =
   | {name: "openai_responses"; supports: readonly ResponsesMode[]; models?: readonly string[]}
   | {name: "openai_video"; models?: readonly string[]}
   | {name: "openai_image"; models?: readonly string[]};
-/** One entry of the OpenAI ImageResponse `data` array rendered by protocols.openai_image.render. */
-export type ImageResponseEntry = {url?: string; b64_json?: string; revised_prompt?: string};
+/** protocols.openai_image.render 返回的图片项；artifact_key 仅供宿主内部读取，响应时移除。 */
+export type ImageResponseEntry = {
+  /** 仅填写无需渠道凭据即可读取的公开 URL。 */
+  url?: string;
+  b64_json?: string;
+  revised_prompt?: string;
+  /** 对应 listArtifacts 中 type 为 image 的 key；无公开 URL 或请求 b64_json 时，宿主通过 buildContentRequest 下载。 */
+  artifact_key?: string;
+};
 export type LocalizedText = string | ({ en: string } & Record<string, string>);
 export type UsageFieldSchema =
   | {type: "number"; unit: "count"; unitLabel?: LocalizedText; description?: LocalizedText}
@@ -137,7 +144,7 @@ export declare const native: Record<string, ((ctx: NativeDecodeContext) => TaskI
 export declare const protocols: {
   openai_responses?: {decodeRequest(ctx: ProtocolDecodeContext): SubmitIntent; renderEvents?(ctx: unknown, task: TaskView, previousState: unknown): unknown; renderFinal?(ctx: unknown, task: TaskView): unknown};
   openai_video?: {decodeRequest(ctx: ProtocolDecodeContext): SubmitIntent; render(ctx: unknown, task: TaskView): unknown};
-  /** render returns the OpenAI ImageResponse; the host adds `created` when absent and resolves response_format b64_json. */
+  /** render 返回图片响应；宿主补齐 created，解析 artifact_key 并处理 response_format；私有素材下载失败返回交付错误，不重新生成或退款。 */
   openai_image?: {decodeRequest(ctx: ProtocolDecodeContext): SubmitIntent; render(ctx: unknown, task: TaskView): {created?: number; data: readonly ImageResponseEntry[]} & Record<string, unknown>};
 };
 export declare function buildSubmitRequest(ctx: DriverContext): RequestDescriptor;
@@ -156,6 +163,8 @@ export declare function buildQueryRequest(ctx: TaskQueryContext): RequestDescrip
 export declare function buildBatchQueryRequest(ctx: BatchQueryContext, tasks: readonly TaskQueryContext[]): RequestDescriptor;
 export declare function parseTaskResult(ctx: TaskQueryContext, body: unknown, response: HookHTTPResponse): NormalizedTaskResult;
 export declare function parseBatchResult(ctx: BatchQueryContext, body: unknown, response: HookHTTPResponse): readonly (NormalizedTaskResult & {taskId: string; data?: unknown; state?: unknown})[];
+/** Optional (this fork; upstream has no such hook). Called when background polling parses a terminal FAILURE, before settlement and refund. Return an ordinary request descriptor to resubmit on the same channel — its response is parsed by this plugin's own parseSubmitResponse, which must return taskId and may return a terminal immediate. Return {} to decline; the original failure then settles as usual. The host caps resubmissions per task (2); the plugin should track attempts and the minimal request body in state, and decline non-retryable failures (content policy, invalid parameters, quota). Multipart file placeholders are request-scoped and cannot be rebuilt here. */
+export declare function buildResubmitRequest(ctx: TaskQueryContext, failure: NormalizedTaskResult): RequestDescriptor | Readonly<Record<string, never>>;
 export declare function extractUsage(ctx: DriverContext & {usagePurpose?: "facts" | "billing_ratios"}): Readonly<Record<string, string | number | boolean>> | null;
 export declare function extractUsageOnSubmit(ctx: DriverContext, taskData: unknown): Readonly<Record<string, string | number | boolean>> | null;
 export declare function extractUsageOnComplete(task: TaskQueryContext, result: NormalizedTaskResult, data: unknown): Readonly<Record<string, string | number | boolean>> | null;

@@ -163,41 +163,16 @@ func New(plugin *pluginruntime.LoadedPlugin) *TaskAdaptor { return &TaskAdaptor{
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo)   { a.info = info }
 
 func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskError {
-	if pinnedValue, exists := c.Get(pluginruntime.ContextKeyPinnedEndpoint); exists {
-		if pinned, ok := pinnedValue.(pluginruntime.PinnedEndpoint); ok && pinned.Plugin == a.plugin {
-			if protocolValue, present := c.Get(pluginruntime.ContextKeyProtocolRequest); present {
-				if protocolContext, valid := protocolValue.(pluginruntime.ProtocolRequestContext); valid {
-					resolvedValue, requestBodyText, callErr := a.plugin.Engine.CallPathWithMemberJSON(
-						context.WithoutCancel(c.Request.Context()), 0, a.plugin.Meta.JSONTextMember("requestBody"),
-						"protocols", []string{pinned.Protocol, "decodeRequest"}, protocolContext.JSValueFor(a.plugin.Meta),
-					)
-					resolved, resolvedOK := resolvedValue.(map[string]any)
-					resolvedModel, modelOK := resolved["model"].(string)
-					if callErr != nil || !resolvedOK || !modelOK || resolvedModel != pinned.Model {
-						return service.TaskErrorWrapperLocal(fmt.Errorf("final task plugin decoder rejected the pinned model"), "plugin_request_invalid", http.StatusBadRequest)
-					}
-					if _, forbidden := resolved["renderer"]; forbidden {
-						return service.TaskErrorWrapperLocal(fmt.Errorf("decoder must not return renderer"), "plugin_request_invalid", http.StatusBadRequest)
-					}
-					if body, present := resolved["requestBody"]; present {
-						c.Set("task_request", body)
-					}
-					if requestBodyText != nil {
-						c.Set(pluginruntime.ContextKeyRequestBodyText, requestBodyText)
-					}
-					if action, valid := resolved["action"].(string); valid && strings.TrimSpace(action) != "" {
-						c.Set("task_action", action)
-						info.Action = action
-					}
-				}
-			}
-		}
+	if err := a.decodeChannelRequest(c, info); err != nil {
+		return service.TaskErrorWrapperLocal(err, "plugin_request_invalid", http.StatusBadRequest)
 	}
 	// On a native path several plugins declare, the channel may have bound a
 	// plugin other than the one that prepared the request; it decodes again,
 	// as after a request plugin changed the body.
 	refreshed := c.GetBool(pluginruntime.ContextKeyRequestRefreshed)
-	if pinnedValue, exists := c.Get(pluginruntime.ContextKeyPinnedRoute); exists {
+	policy := info.ChannelSetting.BodyTextReplacement
+	bodyReplaced := policy != nil && policy.Enabled && len(policy.Rules) > 0
+	if pinnedValue, exists := c.Get(pluginruntime.ContextKeyPinnedRoute); exists && !bodyReplaced {
 		if pinned, ok := pinnedValue.(pluginruntime.PinnedRoute); ok && (len(pinned.Candidates) > 1 || refreshed) && pinned.Plugin == a.plugin {
 			if requestValue, present := c.Get(pluginruntime.ContextKeyRouteRequest); present {
 				if requestContext, valid := requestValue.(pluginruntime.RouteRequestContext); valid {
@@ -1179,6 +1154,115 @@ func (a *TaskAdaptor) ParseTaskResult(task *model.Task, resp *http.Response, bod
 		time.Since(started).Milliseconds(),
 	)
 	return result, nil
+}
+
+func (a *TaskAdaptor) CanResubmitTask() bool {
+	return a.plugin != nil && a.hasHook(context.Background(), "buildResubmitRequest")
+}
+
+// ResubmitTask asks the plugin to replace a failed upstream task with a fresh
+// submission on the same channel. The optional buildResubmitRequest hook
+// receives the poll context (including plugin state) and the failed result,
+// and returns an ordinary request descriptor — or an empty object to decline.
+// The descriptor passes the same base URL/allowed hosts validation as
+// submissions, and its response is parsed by the plugin's own
+// parseSubmitResponse. A nil outcome means the plugin declined or does not
+// implement the hook.
+func (a *TaskAdaptor) ResubmitTask(ctx context.Context, task *model.Task, failure *relaycommon.TaskInfo) (*relaycommon.TaskResubmitOutcome, error) {
+	if a.plugin == nil || task == nil || !a.hasHook(ctx, "buildResubmitRequest") {
+		return nil, nil
+	}
+	key, baseURL, proxy := a.queryCredentials()
+	if task.PrivateData.Key != "" {
+		key = task.PrivateData.Key
+	}
+	key, err := a.taskCredentialLine(ctx, key, task)
+	if err != nil {
+		return nil, err
+	}
+	a.pollKey = key
+	hookContext, err := a.queryContext(task, key, baseURL, proxy)
+	if err != nil {
+		return nil, err
+	}
+	fetchContext := pluginruntime.WithFetcher(ctx, a.hookFetcher(baseURL, proxy))
+	descriptor, err := a.requestDescriptor(fetchContext, "buildResubmitRequest", hookContext, jsonValue(failure))
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(descriptor.URL) == "" {
+		// The plugin declined to resubmit this failure.
+		return nil, nil
+	}
+	resp, err := a.doFetchDescriptor(baseURL, key, proxy, descriptor)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTaskPluginPersistedJSONBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxTaskPluginPersistedJSONBytes {
+		return nil, fmt.Errorf("task resubmit response exceeds size limit")
+	}
+	var responseBody any = string(body)
+	var decoded any
+	if common.Unmarshal(body, &decoded) == nil {
+		responseBody = decoded
+	}
+	headers := make(map[string][]string, len(resp.Header))
+	maps.Copy(headers, resp.Header)
+	value, err := a.plugin.Engine.Call(ctx, "parseSubmitResponse", hookContext, map[string]any{"statusCode": resp.StatusCode, "headers": headers, "body": responseBody})
+	if err != nil {
+		return nil, err
+	}
+	var parsed submitResponse
+	if err = convert(value, &parsed); err != nil || strings.TrimSpace(parsed.TaskID) == "" {
+		if err == nil {
+			err = fmt.Errorf("plugin returned an empty taskId")
+		}
+		return nil, err
+	}
+	var taskData []byte
+	if parsed.TaskData != nil {
+		taskData, err = common.Marshal(parsed.TaskData)
+		if err != nil || len(taskData) > maxTaskPluginPersistedJSONBytes {
+			if err == nil {
+				err = fmt.Errorf("task data exceeds size limit")
+			}
+			return nil, err
+		}
+	}
+	pluginState, present := encodeReturnedPluginState(value)
+	if !present {
+		// Keep the previous state so the resubmit capability survives rounds
+		// even when the plugin only emits state from its submit context.
+		pluginState = task.PrivateData.PluginState
+	}
+	if len(pluginState) > maxTaskPluginPersistedJSONBytes {
+		return nil, fmt.Errorf("resubmit state exceeds size limit")
+	}
+	outcome := &relaycommon.TaskResubmitOutcome{UpstreamTaskID: parsed.TaskID, TaskData: taskData, PluginState: pluginState}
+	if parsed.Immediate == nil {
+		return outcome, nil
+	}
+	immediate := &relaycommon.TaskInfo{
+		Code: parsed.Immediate.Code, TaskID: parsed.Immediate.TaskID,
+		Status: parsed.Immediate.Status, Progress: parsed.Immediate.Progress,
+		Reason: parsed.Immediate.Reason, Url: parsed.Immediate.URL, RemoteUrl: parsed.Immediate.RemoteURL,
+		CompletionTokens: positiveInt(parsed.Immediate.CompletionTokens), TotalTokens: positiveInt(parsed.Immediate.TotalTokens),
+	}
+	outcome.Immediate = immediate
+	if immediate.Status == model.TaskStatusSuccess && a.hasHook(ctx, "extractUsageOnComplete") {
+		facts, hookErr := a.plugin.Engine.Call(ctx, "extractUsageOnComplete", hookContext, jsonValue(immediate), responseBody)
+		if hookErr == nil {
+			upstreamModel, _ := hookContext["upstreamModel"].(string)
+			originModel, _ := hookContext["model"].(string)
+			a.applyCompletionUsageFacts(immediate, facts, upstreamModel, originModel)
+		}
+	}
+	return outcome, nil
 }
 
 func (a *TaskAdaptor) applyCompletionUsageFacts(result *relaycommon.TaskInfo, facts any, models ...string) error {
