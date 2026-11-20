@@ -307,15 +307,18 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, artifactKey string, descri
 	}
 	setting := channel.GetSetting()
 	proxy := strings.TrimSpace(setting.Proxy)
-	if err := validateTaskMediaURL(rawURL, proxy); err != nil {
-		return &taskMediaProxyError{
-			status: http.StatusBadGateway, code: "artifact_request_rejected",
-			message: "Artifact request was rejected", err: err,
+	trustedOrigin := trustedTaskMediaOrigin(channel, task, descriptor, parsedURL)
+	if trustedOrigin == nil {
+		if err := validateTaskMediaURL(rawURL, proxy); err != nil {
+			return &taskMediaProxyError{
+				status: http.StatusBadGateway, code: "artifact_request_rejected",
+				message: "Artifact request was rejected", err: err,
+			}
 		}
 	}
 
 	client := service.GetSSRFProtectedHTTPClient()
-	if proxy != "" {
+	if trustedOrigin != nil || proxy != "" {
 		client, err = service.GetHttpClientWithProxySettings(proxy, setting)
 		if err != nil {
 			return &taskMediaProxyError{
@@ -350,7 +353,6 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, artifactKey string, descri
 		req.Header.Set(name, value)
 	}
 
-	client = taskMediaRedirectClient(client, proxy, c, clientHeaders, descriptor.Credentialless)
 	if fileRelayConfig.Enabled {
 		fullRequest := req.Clone(c.Request.Context())
 		if fullRequest.Method == http.MethodHead {
@@ -359,12 +361,13 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, artifactKey string, descri
 		for _, name := range []string{"Range", "If-Range", "If-None-Match", "If-Modified-Since"} {
 			fullRequest.Header.Del(name)
 		}
-		fullClient := taskMediaRedirectClient(client, proxy, c, nil, descriptor.Credentialless)
+		fullClient := taskMediaRedirectClient(client, proxy, c, nil, descriptor.Credentialless, trustedOrigin)
 		handled, relayErr := relayTaskFile(c, fileRelayConfig, fileRelayCacheKey, service.FileRelaySource{Request: fullRequest, Client: fullClient})
 		if handled || relayErr != nil {
 			return relayErr
 		}
 	}
+	client = taskMediaRedirectClient(client, proxy, c, clientHeaders, descriptor.Credentialless, trustedOrigin)
 	clientWithoutBodyTimeout := *client
 	clientWithoutBodyTimeout.Timeout = 0
 	resp, err := doTaskMediaRequest(&clientWithoutBodyTimeout, req, taskMediaResponseHeaderTimeout)
@@ -593,7 +596,22 @@ func applyTaskMediaRequestHeaders(destination http.Header, headers map[string]st
 	return nil
 }
 
-func taskMediaRedirectClient(base *http.Client, proxy string, c *gin.Context, clientHeaders map[string]string, credentialless bool) *http.Client {
+func trustedTaskMediaOrigin(channel *model.Channel, task *model.Task, descriptor *relaychannel.TaskContentRequest, target *url.URL) *url.URL {
+	if descriptor.Credentialless || !taskHasPluginExecution(task) {
+		return nil
+	}
+	baseURL := channel.GetBaseURL()
+	if baseURL == "" {
+		baseURL = constant.GetChannelBaseURL(channel.Type)
+	}
+	origin, err := url.Parse(baseURL)
+	if err != nil || origin.User != nil || origin.Fragment != "" || !sameTaskMediaOrigin(origin, target) {
+		return nil
+	}
+	return origin
+}
+
+func taskMediaRedirectClient(base *http.Client, proxy string, c *gin.Context, clientHeaders map[string]string, credentialless bool, trustedOrigin *url.URL) *http.Client {
 	cloned := *base
 	cloned.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
@@ -603,7 +621,11 @@ func taskMediaRedirectClient(base *http.Client, proxy string, c *gin.Context, cl
 			req.URL.Host == "" || req.URL.User != nil || req.URL.Fragment != "" {
 			return fmt.Errorf("%w: invalid redirect URL", errTaskMediaRequestRejected)
 		}
-		if err := validateTaskMediaURL(req.URL.String(), proxy); err != nil {
+		if trustedOrigin != nil {
+			if !sameTaskMediaOrigin(trustedOrigin, req.URL) {
+				return fmt.Errorf("%w: redirect outside channel origin", errTaskMediaRequestRejected)
+			}
+		} else if err := validateTaskMediaURL(req.URL.String(), proxy); err != nil {
 			return fmt.Errorf("%w: %v", errTaskMediaRequestRejected, err)
 		}
 		if isSelfTaskMediaURL(c, req.URL) {
@@ -660,11 +682,12 @@ func normalizeTaskMediaHost(scheme, host string) string {
 	if err != nil {
 		return strings.TrimSuffix(host, ".")
 	}
-	hostname = strings.TrimSuffix(strings.ToLower(hostname), ".")
 	if (strings.EqualFold(scheme, "http") && port == "80") || (strings.EqualFold(scheme, "https") && port == "443") {
-		return hostname
+		// Keep an IPv6 literal bracketed, as it is when the port is omitted.
+		host = strings.TrimSuffix(host, ":"+port)
+		return strings.TrimSuffix(host, ".")
 	}
-	return net.JoinHostPort(hostname, port)
+	return net.JoinHostPort(strings.TrimSuffix(hostname, "."), port)
 }
 
 func isSelfTaskMediaURL(c *gin.Context, target *url.URL) bool {

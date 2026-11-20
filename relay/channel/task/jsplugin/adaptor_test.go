@@ -89,6 +89,63 @@ func TestTaskAdaptorRejectsDeprecatedClientResponse(t *testing.T) {
 	assert.Contains(t, taskErr.Error.Error(), "must not return clientResponse")
 }
 
+func TestTaskAdaptorBuildsMultipartFromJSON(t *testing.T) {
+	source := `
+export const meta = {apiVersion:1,key:"json-multipart",name:"JSON Multipart",version:"1.0.0",author:{name:"Test"},models:["m"],fetchMode:"per_task"};
+export function buildSubmitRequest(ctx) {
+  const parts = [{name:"model",value:"m"},{name:"prompt",value:ctx.requestBody.prompt},{name:"tag",value:"first"},{name:"tag",value:"second"},{name:"empty",value:""}];
+  if (ctx.requestBody.reference) parts.push({name:"input_reference",fileRef:"request_file:input_reference"});
+  return {url:ctx.baseUrl+"/submit",headers:{"Content-Type":ctx.requestHeaders["Content-Type"]},bodyType:"multipart",parts};
+}
+export function parseSubmitResponse(){return {taskId:"1"}} export function buildQueryRequest(){return {url:"https://example.com"}} export function parseTaskResult(){return {status:"SUCCESS"}}
+`
+	plugin, err := pluginruntime.NewRegistry().Register(source, pluginruntime.Options{})
+	require.NoError(t, err)
+	for _, testCase := range []struct {
+		name      string
+		reference bool
+		wantError string
+	}{
+		{name: "text fields"},
+		{name: "file reference requires an upload", reference: true, wantError: "multipart boundary not found"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			adaptor := New(plugin)
+			info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: "https://provider.example"}, TaskRelayInfo: &relaycommon.TaskRelayInfo{}}
+			adaptor.Init(info)
+			request := map[string]any{"model": "m", "prompt": "paper plane", "reference": testCase.reference}
+			encoded, err := common.Marshal(request)
+			require.NoError(t, err)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", bytes.NewReader(encoded))
+			c.Request.Header.Set("Content-Type", "application/json")
+			c.Set("task_request", request)
+
+			body, err := adaptor.BuildRequestBody(c, info)
+			if testCase.wantError != "" {
+				require.EqualError(t, err, testCase.wantError)
+				assert.Nil(t, body)
+				return
+			}
+			require.NoError(t, err)
+			upstreamRequest := httptest.NewRequest(http.MethodPost, "https://provider.example/submit", body)
+			require.NoError(t, adaptor.BuildRequestHeader(c, upstreamRequest, info))
+			assert.Equal(t, "application/json", c.GetHeader("Content-Type"))
+			mediaType, params, err := mime.ParseMediaType(upstreamRequest.Header.Get("Content-Type"))
+			require.NoError(t, err)
+			assert.Equal(t, "multipart/form-data", mediaType)
+			require.NotEmpty(t, params["boundary"])
+			require.NoError(t, upstreamRequest.ParseMultipartForm(1024))
+			t.Cleanup(func() { require.NoError(t, upstreamRequest.MultipartForm.RemoveAll()) })
+			assert.Equal(t, map[string][]string{
+				"model": {"m"}, "prompt": {"paper plane"}, "tag": {"first", "second"}, "empty": {""},
+			}, upstreamRequest.MultipartForm.Value)
+			assert.Empty(t, upstreamRequest.MultipartForm.File)
+			t.Log("JSON input produced a decodable multipart request with repeated and empty text fields")
+		})
+	}
+}
+
 func TestTaskAdaptorBuildsMultipartFromOpaqueFileReference(t *testing.T) {
 	// The plugin forwards the client's Content-Type, whose boundary is not the one of the rebuilt body.
 	source := `
@@ -3190,6 +3247,11 @@ export function parseTaskResult(){return {status:"SUCCESS"}}
 		info := &relaycommon.RelayInfo{OriginModelName: "old-model", TaskRelayInfo: &relaycommon.TaskRelayInfo{}, ChannelMeta: &relaycommon.ChannelMeta{
 			ChannelBaseUrl: "https://provider.example", ChannelSetting: dto.ChannelSettings{BodyTextReplacement: &dto.BodyTextReplacement{Enabled: true, Rules: []dto.BodyTextReplacementRule{{From: "old", To: target}, {From: "one", To: "2"}}}},
 		}}
+		wantOverride := ""
+		if target == "first" {
+			info.ParamOverride = map[string]any{"style": "old"}
+			wantOverride = `,"style":"old"`
+		}
 		c.Set("model_mapping", `{"`+target+`-model":"upstream-model"}`)
 		require.NoError(t, helper.ModelMappedHelper(c, info, nil))
 		adaptor := New(plugin)
@@ -3199,7 +3261,7 @@ export function parseTaskResult(){return {status:"SUCCESS"}}
 		require.NoError(t, err)
 		wire, err := io.ReadAll(body)
 		require.NoError(t, err)
-		assert.JSONEq(t, `{"model":"upstream-model","prompt":"`+target+`","count":"2","extra":{"z":"`+target+`","a":false}}`, string(wire))
+		assert.JSONEq(t, `{"model":"upstream-model","prompt":"`+target+`","count":"2","extra":{"z":"`+target+`","a":false}`+wantOverride+`}`, string(wire))
 		facts, err := adaptor.ExtractUsageFactsValidated(c, info)
 		require.NoError(t, err)
 		encoded, err := common.Marshal(facts)

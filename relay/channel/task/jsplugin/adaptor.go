@@ -56,6 +56,8 @@ type requestDescriptor struct {
 	// BodyText is the body as JSON.stringify wrote it, for a plugin that
 	// preserves JSON order: the upstream gets the members in that order.
 	BodyText json.RawMessage `json:"-"`
+
+	multipartContentType string
 }
 
 // orderedRequestDescriptor is requestDescriptor as a plugin that preserves
@@ -163,8 +165,9 @@ func New(plugin *pluginruntime.LoadedPlugin) *TaskAdaptor { return &TaskAdaptor{
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo)   { a.info = info }
 
 func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskError {
-	if err := a.decodeChannelRequest(c, info); err != nil {
-		return service.TaskErrorWrapperLocal(err, "plugin_request_invalid", http.StatusBadRequest)
+	c.Set(pluginruntime.ContextKeyEffectiveImageRequest, nil)
+	if taskErr := a.decodeChannelRequest(c, info); taskErr != nil {
+		return taskErr
 	}
 	// On a native path several plugins declare, the channel may have bound a
 	// plugin other than the one that prepared the request; it decodes again,
@@ -323,16 +326,16 @@ func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, erro
 	return requestURL, pluginruntime.ValidateRequestURL(requestURL, info.ChannelBaseUrl, a.plugin.Meta.AllowedHosts)
 }
 
-func (a *TaskAdaptor) BuildRequestHeader(c *gin.Context, req *http.Request, _ *relaycommon.RelayInfo) error {
+func (a *TaskAdaptor) BuildRequestHeader(_ *gin.Context, req *http.Request, _ *relaycommon.RelayInfo) error {
 	if a.submit == nil {
 		return fmt.Errorf("plugin submit request was not built")
 	}
 	for name, value := range a.submit.Headers {
 		req.Header.Set(name, value)
 	}
-	// BuildRequestBody owns the regenerated multipart boundary.
-	if a.submit.BodyType == "multipart" {
-		req.Header.Set("Content-Type", c.Request.Header.Get("Content-Type"))
+	// The upstream Content-Type must carry the boundary used to encode the body.
+	if a.submit.multipartContentType != "" {
+		req.Header.Set("Content-Type", a.submit.multipartContentType)
 	}
 	applyTaskCredential(a.credential, &url.URL{}, req.Header)
 	return nil
@@ -345,17 +348,6 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	}
 	if descriptor.BodyType == "multipart" {
 		var form *multipart.Form
-		for _, part := range descriptor.Parts {
-			if part.FileRef == "" {
-				continue
-			}
-			form, err = common.ParseMultipartFormReusable(c)
-			if err != nil {
-				return nil, err
-			}
-			defer form.RemoveAll()
-			break
-		}
 		var body bytes.Buffer
 		writer := multipart.NewWriter(&body)
 		for _, part := range descriptor.Parts {
@@ -374,6 +366,14 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 					return nil, err
 				}
 				continue
+			}
+			// Text-only multipart output may originate from a JSON request.
+			if form == nil {
+				form, err = common.ParseMultipartFormReusable(c)
+				if err != nil {
+					return nil, err
+				}
+				defer form.RemoveAll()
 			}
 			field, index, validRef := pluginruntime.ParseFileReference(part.FileRef)
 			files := form.File[field]
@@ -408,7 +408,7 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		if err = writer.Close(); err != nil {
 			return nil, err
 		}
-		c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+		descriptor.multipartContentType = writer.FormDataContentType()
 		return bytes.NewReader(body.Bytes()), nil
 	}
 	if descriptor.Body == nil {

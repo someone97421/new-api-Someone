@@ -144,7 +144,7 @@ export declare const native: Record<string, ((ctx: NativeDecodeContext) => TaskI
 export declare const protocols: {
   openai_responses?: {decodeRequest(ctx: ProtocolDecodeContext): SubmitIntent; renderEvents?(ctx: unknown, task: TaskView, previousState: unknown): unknown; renderFinal?(ctx: unknown, task: TaskView): unknown};
   openai_video?: {decodeRequest(ctx: ProtocolDecodeContext): SubmitIntent; render(ctx: unknown, task: TaskView): unknown};
-  /** render 返回图片响应；宿主补齐 created，解析 artifact_key 并处理 response_format；私有素材下载失败返回交付错误，不重新生成或退款。 */
+  /** 最终解码和渲染使用当前渠道的参数覆盖。宿主补齐 created，解析 artifact_key 并处理生效的 response_format。私有素材下载失败返回交付错误，不重新生成或退款。 */
   openai_image?: {decodeRequest(ctx: ProtocolDecodeContext): SubmitIntent; render(ctx: unknown, task: TaskView): {created?: number; data: readonly ImageResponseEntry[]} & Record<string, unknown>};
 };
 export declare function buildSubmitRequest(ctx: DriverContext): RequestDescriptor;

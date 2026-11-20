@@ -121,7 +121,11 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 		respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
 		return
 	}
-	// Rendering keeps the original client body, including response_format.
+	if value, exists := c.Get(pluginruntime.ContextKeyEffectiveImageRequest); exists {
+		if effective, ok := value.(pluginruntime.ProtocolRequestContext); ok {
+			protocolRequest = effective
+		}
+	}
 	protocolRequest.UpstreamModel = outcome.Task.Properties.UpstreamModelName
 	task := outcome.Task
 	if task.Status != model.TaskStatusSuccess && task.Status != model.TaskStatusFailure {
@@ -307,11 +311,14 @@ func downloadTaskPluginImageArtifact(c *gin.Context, task *model.Task, artifactK
 	}
 	setting := channel.GetSetting()
 	proxy := strings.TrimSpace(setting.Proxy)
-	if err := validateTaskMediaURL(rawURL, proxy); err != nil {
-		return "", err
+	trustedOrigin := trustedTaskMediaOrigin(channel, task, descriptor, parsedURL)
+	if trustedOrigin == nil {
+		if err := validateTaskMediaURL(rawURL, proxy); err != nil {
+			return "", err
+		}
 	}
 	client := service.GetSSRFProtectedHTTPClient()
-	if proxy != "" {
+	if trustedOrigin != nil || proxy != "" {
 		client, err = service.GetHttpClientWithProxySettings(proxy, setting)
 		if err != nil {
 			return "", err
@@ -327,7 +334,7 @@ func downloadTaskPluginImageArtifact(c *gin.Context, task *model.Task, artifactK
 	if err := applyTaskMediaRequestHeaders(req.Header, descriptor.Headers); err != nil {
 		return "", err
 	}
-	client = taskMediaRedirectClient(client, proxy, c, nil, descriptor.Credentialless)
+	client = taskMediaRedirectClient(client, proxy, c, nil, descriptor.Credentialless, trustedOrigin)
 	resp, err := doTaskMediaRequest(client, req, taskMediaResponseHeaderTimeout)
 	if err != nil {
 		return "", err

@@ -5,16 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net/http"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/dto"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/relaykit/dto"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
 
-func replaceTaskRequestBody(request pluginruntime.RouteRequestContext, policy *dto.BodyTextReplacement) (pluginruntime.RouteRequestContext, error) {
+func replaceTaskRequestBody(request pluginruntime.RouteRequestContext, policy *kitdto.BodyTextReplacement) (pluginruntime.RouteRequestContext, error) {
 	if policy == nil || !policy.Enabled || len(policy.Rules) == 0 {
 		return request, nil
 	}
@@ -69,7 +72,10 @@ func replaceTaskRequestBody(request pluginruntime.RouteRequestContext, policy *d
 	return request, nil
 }
 
-func (a *TaskAdaptor) decodeChannelRequest(c *gin.Context, info *relaycommon.RelayInfo) error {
+func (a *TaskAdaptor) decodeChannelRequest(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskError {
+	invalid := func(err error) *dto.TaskError {
+		return service.TaskErrorWrapperLocal(err, "plugin_request_invalid", http.StatusBadRequest)
+	}
 	var (
 		request pluginruntime.RouteRequestContext
 		hook    string
@@ -90,9 +96,23 @@ func (a *TaskAdaptor) decodeChannelRequest(c *gin.Context, info *relaycommon.Rel
 		}
 		request, err = replaceTaskRequestBody(protocol.RouteRequestContext, policy)
 		if err != nil {
-			return err
+			return invalid(err)
 		}
 		protocol.RouteRequestContext = request
+		if pinned.Protocol == pluginruntime.ProtocolOpenAIImage && info.ChannelMeta != nil && len(info.ParamOverride) > 0 {
+			protocol, err = applyImageProtocolParamOverride(protocol, info)
+			if err != nil {
+				taskErr := service.TaskErrorWrapperLocal(err, "channel_param_override_invalid", http.StatusBadRequest)
+				taskErr.NoRetry = true
+				if fixed, ok := relaycommon.AsParamOverrideReturnError(err); ok {
+					taskErr.Code, taskErr.Message = fixed.Code, fixed.Message
+					taskErr.StatusCode, taskErr.NoRetry = fixed.StatusCode, fixed.SkipRetry
+				}
+				return taskErr
+			}
+			request = protocol.RouteRequestContext
+			c.Set(pluginruntime.ContextKeyEffectiveImageRequest, protocol)
+		}
 		protocol.UpstreamModel = info.UpstreamModelName
 		ctx = protocol.JSValueFor(a.plugin.Meta)
 		hook, path = "protocols", []string{pinned.Protocol, "decodeRequest"}
@@ -107,12 +127,12 @@ func (a *TaskAdaptor) decodeChannelRequest(c *gin.Context, info *relaycommon.Rel
 		value, _ = c.Get(pluginruntime.ContextKeyRouteRequest)
 		original, ok := value.(pluginruntime.RouteRequestContext)
 		if !ok {
-			return fmt.Errorf("task native context is unavailable")
+			return invalid(fmt.Errorf("task native context is unavailable"))
 		}
 		original.Params = pluginruntime.RouteParams(c.Params, pinned.Route)
 		request, err = replaceTaskRequestBody(original, policy)
 		if err != nil {
-			return err
+			return invalid(err)
 		}
 		ctx = request.JSValueFor(a.plugin.Meta)
 		hook, path = "native", []string{pinned.Route.Decode}
@@ -123,28 +143,28 @@ func (a *TaskAdaptor) decodeChannelRequest(c *gin.Context, info *relaycommon.Rel
 		context.WithoutCancel(c.Request.Context()), 0, a.plugin.Meta.JSONTextMember("requestBody"), hook, path, ctx,
 	)
 	if err != nil {
-		return err
+		return invalid(err)
 	}
 	resolved, ok := value.(map[string]any)
 	if !ok || resolved["kind"] != "submit" {
-		return fmt.Errorf("final task plugin decoder must return a submit intent")
+		return invalid(fmt.Errorf("final task plugin decoder must return a submit intent"))
 	}
 	model, ok := resolved["model"].(string)
 	if !ok || (!strings.EqualFold(model, info.OriginModelName) && !strings.EqualFold(model, info.ChannelRequestModel())) {
-		return fmt.Errorf("final task plugin decoder rejected the pinned model")
+		return invalid(fmt.Errorf("final task plugin decoder rejected the pinned model"))
 	}
 	if _, forbidden := resolved["renderer"]; forbidden {
-		return fmt.Errorf("decoder must not return renderer")
+		return invalid(fmt.Errorf("decoder must not return renderer"))
 	}
 	if policy != nil && policy.Enabled {
 		if ids, present := resolved["originTaskIds"]; present {
 			encoded, err := common.Marshal(ids)
 			if err != nil {
-				return err
+				return invalid(err)
 			}
 			var taskIDs []string
 			if err := common.Unmarshal(encoded, &taskIDs); err != nil {
-				return err
+				return invalid(err)
 			}
 			for _, id := range taskIDs {
 				owned := false
@@ -154,7 +174,7 @@ func (a *TaskAdaptor) decodeChannelRequest(c *gin.Context, info *relaycommon.Rel
 					}
 				}
 				if !owned {
-					return fmt.Errorf("body text replacement changed a pinned origin task")
+					return invalid(fmt.Errorf("body text replacement changed a pinned origin task"))
 				}
 			}
 		}
