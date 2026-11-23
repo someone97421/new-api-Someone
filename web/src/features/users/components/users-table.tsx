@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import type { OnChangeFn, SortingState } from '@tanstack/react-table'
+import { X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -28,6 +29,7 @@ import {
   DataTablePage,
   useDataTable,
 } from '@/components/data-table'
+import { Button } from '@/components/ui/button'
 import { useMediaQuery } from '@/hooks'
 import { useTableUrlState } from '@/hooks/use-table-url-state'
 import {
@@ -63,11 +65,19 @@ function isDisabledUserRow(user: User) {
 }
 
 export function UsersTable() {
+  const parentId = route.useSearch({ select: (search) => search.parentId })
+  return <UsersTableContent key={parentId} />
+}
+
+function UsersTableContent() {
   const { t } = useTranslation()
   const columns = useUsersColumns()
   const { refreshTrigger } = useUsers()
   const isMobile = useMediaQuery('(max-width: 640px)')
   const [sorting, setSorting] = useState<SortingState>([])
+  const search = route.useSearch()
+  const navigate = route.useNavigate()
+  const { parentId } = search
 
   const {
     globalFilter,
@@ -78,8 +88,8 @@ export function UsersTable() {
     onPaginationChange,
     ensurePageInRange,
   } = useTableUrlState({
-    search: route.useSearch(),
-    navigate: route.useNavigate(),
+    search,
+    navigate,
     pagination: { defaultPage: 1, defaultPageSize: isMobile ? 10 : 20 },
     globalFilter: { enabled: true, key: 'filter' },
     columnFilters: [
@@ -139,12 +149,15 @@ export function UsersTable() {
       statusFilter,
       roleFilter,
       groupFilter,
+      parentId,
       sortParams,
       refreshTrigger,
     ],
     queryFn: async () => {
       const hasFilter = globalFilter?.trim()
-      const hasColumnFilter =
+      const shouldSearch =
+        hasFilter ||
+        parentId !== undefined ||
         statusFilter.length > 0 ||
         roleFilter.length > 0 ||
         groupFilter.length > 0
@@ -154,21 +167,21 @@ export function UsersTable() {
         ...sortParams,
       }
 
-      const result =
-        hasFilter || hasColumnFilter
-          ? await searchUsers({
-              ...params,
-              keyword: globalFilter,
-              status: statusFilter[0] ?? '',
-              role: roleFilter[0] ?? '',
-              group: groupFilter[0] ?? '',
-            })
-          : await getUsers(params)
+      const result = shouldSearch
+        ? await searchUsers({
+            ...params,
+            keyword: globalFilter,
+            status: statusFilter[0] ?? '',
+            role: roleFilter[0] ?? '',
+            group: groupFilter[0] ?? '',
+            parent_id: parentId,
+          })
+        : await getUsers(params)
 
       if (!result.success) {
         throw createServerError(
           result,
-          t(hasFilter ? 'Failed to search users' : 'Failed to load users')
+          t(shouldSearch ? 'Failed to search users' : 'Failed to load users')
         )
       }
 
@@ -229,6 +242,24 @@ export function UsersTable() {
       toolbarProps={{
         searchPlaceholder: t('Filter by username, name or email...'),
         searchDebounceMs: 500,
+        additionalSearch: parentId !== undefined && (
+          <Button
+            variant='outline'
+            aria-label={t('Clear parent account filter')}
+            onClick={() =>
+              navigate({
+                search: (prev) => ({
+                  ...prev,
+                  page: undefined,
+                  parentId: undefined,
+                }),
+              })
+            }
+          >
+            {t('Parent account:')} #{parentId}
+            <X aria-hidden='true' />
+          </Button>
+        ),
         filters: [
           {
             columnId: 'status',

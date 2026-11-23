@@ -137,3 +137,60 @@ func TestSubaccountManagementAuthorization(t *testing.T) {
 	assert.Equal(t, common.UserStatusDisabled, disabledChild.Status)
 	assert.Equal(t, child.AuthVersion+1, disabledChild.AuthVersion)
 }
+
+func TestAdminUserSubaccountHierarchy(t *testing.T) {
+	db := setupManageUserTestDB(t)
+	parent := model.User{Username: "family-parent", AffCode: "family-parent", Role: common.RoleAdminUser}
+	other := model.User{Username: "other-parent", AffCode: "other-parent"}
+	require.NoError(t, db.Create(&parent).Error)
+	require.NoError(t, db.Create(&other).Error)
+	child := model.User{Username: "family-child", AffCode: "family-child", ParentId: parent.Id}
+	otherChild := model.User{Username: "other-child", AffCode: "other-child", ParentId: other.Id}
+	require.NoError(t, db.Create(&child).Error)
+	require.NoError(t, db.Create(&otherChild).Error)
+	adminSession, err := service.CreateLoginSession(parent.Id, "password", "127.0.0.1", "admin-list-test")
+	require.NoError(t, err)
+	childSession, err := service.CreateLoginSession(child.Id, "password", "127.0.0.1", "admin-list-test")
+	require.NoError(t, err)
+
+	r := gin.New()
+	r.GET("/api/user/", middleware.AdminAuth(), GetAllUsers)
+	r.GET("/api/user/search", middleware.AdminAuth(), SearchUsers)
+	request := func(path, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		res := httptest.NewRecorder()
+		r.ServeHTTP(res, req)
+		return res
+	}
+	getPage := func(path string) (int, []model.AdminUserRow) {
+		t.Helper()
+		res := request(path, adminSession.AccessToken)
+		require.Equal(t, http.StatusOK, res.Code, res.Body.String())
+		var response struct {
+			Success bool `json:"success"`
+			Data    struct {
+				Total int                  `json:"total"`
+				Items []model.AdminUserRow `json:"items"`
+			} `json:"data"`
+		}
+		require.NoError(t, common.Unmarshal(res.Body.Bytes(), &response))
+		require.True(t, response.Success, res.Body.String())
+		return response.Data.Total, response.Data.Items
+	}
+	total, rows := getPage("/api/user/?p=1&page_size=1&sort_by=id&sort_order=asc")
+	assert.Equal(t, 4, total)
+	require.Len(t, rows, 1)
+	assert.Equal(t, parent.Id, rows[0].Id)
+	assert.Equal(t, 1, rows[0].SubaccountCount)
+
+	path := "/api/user/search?keyword=child&parent_id=" + strconv.Itoa(parent.Id)
+	total, rows = getPage(path)
+	assert.Equal(t, 1, total)
+	require.Len(t, rows, 1)
+	assert.Equal(t, child.Id, rows[0].Id)
+	assert.Equal(t, parent.Id, rows[0].ParentID)
+	assert.Equal(t, parent.Username, rows[0].ParentUsername)
+	assert.Equal(t, http.StatusForbidden, request(path, childSession.AccessToken).Code)
+	assert.Equal(t, http.StatusBadRequest, request("/api/user/search?parent_id=-1", adminSession.AccessToken).Code)
+}

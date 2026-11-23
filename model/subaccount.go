@@ -153,3 +153,56 @@ func DisableSubaccount(identity AuthSessionIdentity, childID int) error {
 	}
 	return nil
 }
+
+type AdminUserRow struct {
+	*User
+	ParentID        int    `json:"parent_id,omitempty"`
+	ParentUsername  string `json:"parent_username,omitempty"`
+	SubaccountCount int    `json:"subaccount_count,omitempty"`
+}
+
+// AdminUserRows resolves relationships outside the current page and filters.
+func AdminUserRows(users []*User) ([]AdminUserRow, error) {
+	rows := make([]AdminUserRow, len(users))
+	parentIDs := make([]int, 0, len(users))
+	rootIDs := make([]int, 0, len(users))
+	for i, user := range users {
+		rows[i] = AdminUserRow{User: user, ParentID: user.ParentId}
+		if user.ParentId > 0 {
+			parentIDs = append(parentIDs, user.ParentId)
+		} else {
+			rootIDs = append(rootIDs, user.Id)
+		}
+	}
+	parentNames := make(map[int]string, len(parentIDs))
+	if len(parentIDs) > 0 {
+		var parents []struct {
+			Id       int
+			Username string
+		}
+		if err := DB.Unscoped().Model(&User{}).Select("id", "username").Where("id IN ?", parentIDs).Find(&parents).Error; err != nil {
+			return nil, err
+		}
+		for _, parent := range parents {
+			parentNames[parent.Id] = parent.Username
+		}
+	}
+	counts := make(map[int]int, len(rootIDs))
+	if len(rootIDs) > 0 {
+		var children []struct {
+			ParentID int
+			Total    int
+		}
+		if err := DB.Unscoped().Model(&User{}).Select("parent_id, COUNT(*) AS total").Where("parent_id IN ?", rootIDs).Group("parent_id").Find(&children).Error; err != nil {
+			return nil, err
+		}
+		for _, child := range children {
+			counts[child.ParentID] = child.Total
+		}
+	}
+	for i := range rows {
+		rows[i].ParentUsername = parentNames[rows[i].ParentID]
+		rows[i].SubaccountCount = counts[rows[i].Id]
+	}
+	return rows, nil
+}

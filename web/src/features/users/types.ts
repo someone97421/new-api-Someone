@@ -51,6 +51,9 @@ export const userSchema = z.object({
   aff_quota: z.number().optional(),
   aff_history_quota: z.number().optional(),
   inviter_id: z.number().optional(),
+  parent_id: z.number().optional(),
+  parent_username: z.string().optional(),
+  subaccount_count: z.number().optional(),
   linux_do_id: z.string().optional(),
   status: userStatusSchema,
   role: userRoleSchema,
@@ -111,6 +114,7 @@ export interface SearchUsersParams {
   group?: string
   role?: string
   status?: string
+  parent_id?: number
   p?: number
   page_size?: number
   sort_by?: UserSortBy

@@ -67,7 +67,7 @@ export async function getUsers(
 }
 
 /**
- * Search users by keyword or group
+ * Search users by keyword and optional filters
  */
 export async function searchUsers(
   params: SearchUsersParams
@@ -77,6 +77,7 @@ export async function searchUsers(
     group = '',
     role = '',
     status = '',
+    parent_id,
     p = 1,
     page_size = 10,
     sort_by,
@@ -87,6 +88,7 @@ export async function searchUsers(
   queryParams.set('group', group)
   if (role) queryParams.set('role', role)
   if (status) queryParams.set('status', status)
+  if (parent_id !== undefined) queryParams.set('parent_id', String(parent_id))
   queryParams.set('p', String(p))
   queryParams.set('page_size', String(page_size))
   if (sort_by) queryParams.set('sort_by', sort_by)

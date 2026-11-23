@@ -27,6 +27,7 @@ const usersSearchSchema = z.object({
   page: z.number().optional().catch(1),
   pageSize: z.number().optional().catch(undefined),
   filter: z.string().optional().catch(''),
+  parentId: z.number().int().positive().optional().catch(undefined),
   status: z
     .array(z.enum(['-1', '1', '2']))
     .optional()

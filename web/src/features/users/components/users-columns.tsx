@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { Link } from '@tanstack/react-router'
 import type { ColumnDef } from '@tanstack/react-table'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -26,14 +27,17 @@ import { GroupBadge } from '@/components/group-badge'
 import { LongText } from '@/components/long-text'
 import { StatusBadge } from '@/components/status-badge'
 import { TableId } from '@/components/table-id'
+import { buttonVariants } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { toIntlLocale } from '@/i18n/languages'
 import { getCurrencyDisplay } from '@/lib/currency'
-import { formatQuota } from '@/lib/format'
+import { formatNumber, formatQuota } from '@/lib/format'
+import { cn } from '@/lib/utils'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import {
@@ -47,7 +51,8 @@ import { DataTableRowActions } from './data-table-row-actions'
 import { UserQuotaCell } from './user-quota-cell'
 
 export function useUsersColumns(): ColumnDef<User>[] {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const currencyConfig = useSystemConfigStore((state) => state.config.currency)
   const { meta: currency } = getCurrencyDisplay()
   const quotaUnit = currency.kind === 'tokens' ? t('Tokens') : currency.symbol
@@ -99,9 +104,12 @@ export function useUsersColumns(): ColumnDef<User>[] {
           const username = row.getValue('username') as string
           const displayName = row.original.display_name
           const remark = row.original.remark
+          const { id, parent_id, parent_username, subaccount_count } =
+            row.original
+          const parentName = parent_username?.trim()
 
           return (
-            <div className='flex min-w-[160px] flex-col gap-1'>
+            <div className='flex min-w-0 flex-col gap-1 sm:min-w-[160px]'>
               <div className='flex items-center gap-2'>
                 <LongText className='max-w-[140px] text-sm font-normal'>
                   {username}
@@ -132,6 +140,34 @@ export function useUsersColumns(): ColumnDef<User>[] {
                 >
                   <LongText>{displayName}</LongText>
                 </div>
+              )}
+              {parent_id !== undefined && parent_id > 0 && (
+                <div
+                  data-table-text='secondary'
+                  className='text-muted-foreground flex max-w-[200px] min-w-0 items-center gap-1 text-xs font-normal'
+                >
+                  <span>{t('Parent account:')}</span>
+                  {parentName && <LongText>{parentName}</LongText>}
+                  <span className='shrink-0'>#{parent_id}</span>
+                </div>
+              )}
+              {subaccount_count !== undefined && subaccount_count > 0 && (
+                <Link
+                  from='/users/'
+                  to='/users'
+                  search={(prev) => ({
+                    pageSize: prev.pageSize,
+                    parentId: id,
+                  })}
+                  className={cn(
+                    buttonVariants({ variant: 'link', size: 'xs' }),
+                    'h-auto min-h-6 max-w-full self-start px-0 text-left whitespace-normal'
+                  )}
+                >
+                  {t('Subaccounts: {{total}}', {
+                    total: formatNumber(subaccount_count, locale),
+                  })}
+                </Link>
               )}
             </div>
           )
@@ -298,6 +334,6 @@ export function useUsersColumns(): ColumnDef<User>[] {
     ],
     // formatQuota reads the currency configuration from the store.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [t, quotaUnit, currencyConfig]
+    [t, quotaUnit, currencyConfig, locale]
   )
 }

@@ -344,11 +344,7 @@ func GetAllUsers(c *gin.Context) {
 		return
 	}
 
-	pageInfo.SetTotal(int(total))
-	pageInfo.SetItems(users)
-
-	common.ApiSuccess(c, pageInfo)
-	return
+	writeAdminUsersPage(c, pageInfo, users, total)
 }
 
 func SearchUsers(c *gin.Context) {
@@ -366,18 +362,35 @@ func SearchUsers(c *gin.Context) {
 			status = &parsed
 		}
 	}
+	var parentID int
+	if parent := c.Query("parent_id"); parent != "" {
+		parsed, err := strconv.Atoi(parent)
+		if err != nil || parsed <= 0 {
+			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
+			return
+		}
+		parentID = parsed
+	}
 	pageInfo := common.GetPageQuery(c)
 	sortOptions := model.NewUserSortOptions(c.Query("sort_by"), c.Query("sort_order"))
-	users, total, err := model.SearchUsers(keyword, group, role, status, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), sortOptions)
+	users, total, err := model.SearchUsers(keyword, group, role, status, parentID, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), sortOptions)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 
+	writeAdminUsersPage(c, pageInfo, users, total)
+}
+
+func writeAdminUsersPage(c *gin.Context, pageInfo *common.PageInfo, users []*model.User, total int64) {
+	rows, err := model.AdminUserRows(users)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	pageInfo.SetTotal(int(total))
-	pageInfo.SetItems(users)
+	pageInfo.SetItems(rows)
 	common.ApiSuccess(c, pageInfo)
-	return
 }
 
 func canManageTargetRole(myRole int, targetRole int) bool {
