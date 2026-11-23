@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var expectedKeys = []string{"alibaba", "doubao", "google", "hailuo", "jimeng", "jimeng-reverse", "jingyu", "kling", "libtv", "lovart", "magnific", "magnific-reverse", "rh-reverse", "sora", "sunoapi", "vertex-ai", "vidu", "xai", "xyq"}
+var expectedKeys = []string{"alibaba", "doubao", "google", "grsai", "hailuo", "jimeng", "jimeng-reverse", "jingyu", "kling", "libtv", "lovart", "magnific", "magnific-reverse", "rh-reverse", "sora", "sunoapi", "vertex-ai", "vidu", "xai", "xyq"}
 var responsePluginKeys = []string{"alibaba", "doubao", "google", "hailuo", "jimeng", "kling", "sora", "sunoapi", "vertex-ai", "vidu", "xai"}
 
 // The built-in request processing plugins and the stage hooks each exports.
@@ -502,4 +502,75 @@ func TestBuiltInPluginsAddressNewAPIUpstreamOnNativeRoutes(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestGrsAIRoutesAndTaskConversion(t *testing.T) {
+	generation := jsplugin.DefaultRegistry.Generation()
+	plugin, found := generation.Get("grsai")
+	require.True(t, found)
+	_, found = generation.LookupDeclaredRoute("POST", "/grsai/v1/api/generate")
+	assert.False(t, plugin.Meta.RelaysModel("gpt-image-2"))
+	assert.False(t, plugin.Meta.RelaysModel("nano-banana-2"))
+	assert.True(t, plugin.Meta.RelaysModel("gemini-3.8-flash"))
+	assert.True(t, plugin.Meta.RelaysModel("gpt-6.2-sol"))
+	require.True(t, found)
+	query, found := generation.LookupDeclaredRoute("GET", "/grsai/v1/api/result")
+	require.True(t, found)
+	assert.True(t, query.Route.TaskIDInQuery())
+	assert.Equal(t, "id", query.Route.TaskIDParam)
+	for _, key := range []string{"grsai", "jingyu"} {
+		candidates := generation.LookupEndpointCandidates("POST", "/v1/images/generations", "gpt-image-2")
+		assert.True(t, slices.ContainsFunc(candidates, func(binding jsplugin.ProtocolBinding) bool {
+			return binding.Plugin.Meta.Key == key
+		}), key)
+	}
+
+	ctx := t.Context()
+	value, err := plugin.Engine.CallPath(ctx, "protocols", []string{"openai_image", "decodeRequest"}, map[string]any{
+		"model": "gpt-image-2.6", "operation": "edit",
+		"body": map[string]any{
+			"kind": "multipart", "fields": map[string]any{"prompt": []any{"edit"}, "output_format": []any{"gif"}, "extra": []any{`{"seed":0,"enabled":false}`}},
+			"files": []any{map[string]any{"field": "image[]", "ref": "request_file:image[]"}},
+		},
+	})
+	require.NoError(t, err)
+	intent, ok := value.(map[string]any)
+	require.True(t, ok)
+	value, err = plugin.Engine.Call(ctx, "buildSubmitRequest", map[string]any{
+		"baseUrl": "https://vendor.example/", "authHeader": "Bearer fixture", "model": intent["model"], "action": intent["action"], "requestBody": intent["requestBody"],
+	})
+	require.NoError(t, err)
+	request, ok := value.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "https://vendor.example/v1/api/generate", request["url"])
+	body, ok := request["body"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "async", body["replyType"])
+	assert.Equal(t, "gif", body["outputFormat"])
+	assert.Equal(t, []any{map[string]any{"__fileRef": "request_file:image[]", "encoding": "dataUrl"}}, body["images"])
+	extra, err := common.Marshal(body["extra"])
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"seed":0,"enabled":false}`, string(extra))
+
+	value, err = plugin.Engine.Call(ctx, "buildQueryRequest", map[string]any{
+		"baseUrl": "https://gateway.example", "taskId": "public&id", "upstream": map[string]any{"kind": "new_api"},
+	})
+	require.NoError(t, err)
+	queryRequest, ok := value.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "https://gateway.example/grsai/v1/api/result?id=public%26id", queryRequest["url"])
+
+	value, err = plugin.Engine.Call(ctx, "parseSubmitResponse", map[string]any{}, map[string]any{
+		"body": map[string]any{"id": "upstream-id", "status": "running"},
+	})
+	require.NoError(t, err)
+	accepted, ok := value.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "upstream-id", accepted["taskId"])
+	assert.Nil(t, accepted["immediate"])
+
+	_, err = plugin.Engine.CallPath(ctx, "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+		"model": "minimax-h3", "body": map[string]any{"kind": "json", "value": map[string]any{"prompt": "video", "seconds": "11", "size": "1920x1080"}},
+	})
+	require.ErrorContains(t, err, "duration must be an integer between 1 and 10")
 }

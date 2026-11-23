@@ -2473,6 +2473,67 @@ func TestTaskSubmitStreamRelaysToNativeClients(t *testing.T) {
 	}
 }
 
+func TestNativeSubmitStreamPublicID(t *testing.T) {
+	const source = `
+export const meta = {apiVersion:1,key:"public-stream",name:"Public stream",version:"1.0.0",author:{name:"Test"},models:["stream"],fetchMode:"per_task",submitResponseTypes:["sse"]};
+export function buildSubmitRequest(ctx){return {url:ctx.baseUrl, responseType:"sse"};}
+export function buildQueryRequest(ctx){return {url:ctx.baseUrl};}
+export function parseTaskResult(){return {status:"SUCCESS"};}
+export function parseSubmitEvent(ctx,event,state){
+  if (event.data === "[DONE]") return {state,done:true};
+  if (event.event === "update") return {state:{taskId:JSON.parse(event.data).id,eventId:event.id},done:false};
+  return {state,done:false};
+}
+export function parseSubmitResponse(ctx,response){return {taskId:response.body.taskId,taskData:response.body};}
+`
+	const heartbeat = ": keep-alive\n\n"
+	const originalEvent = "event: update\nid: cursor-7\nretry: 1200\ndata:  {\n: intra-event comment\ndata:\"\\u0069d\": \"vendor-job\",\n" +
+		`data: "value":9007199254740993,"nested":{"id":"nested"},"enabled":false}` + "\n\n"
+	const tail = "data: {\"id\":123}\n\ndata: [DONE]\n\n"
+	const malformed = "event: update\ndata: {\"id\":\"vendor-job\",}\n\n"
+	original := heartbeat + originalEvent + tail
+	rewritten := strings.Replace(original, `"vendor-job"`, `"gateway-job"`, 1)
+	for _, tc := range []struct {
+		name, publicID, body, want string
+		optIn, native, stopped     bool
+		wantErr                    string
+	}{
+		{name: "native opt-in with CRLF", publicID: "gateway-job", body: strings.ReplaceAll(original, "\n", "\r\n"), want: rewritten, optIn: true, native: true},
+		{name: "native legacy", publicID: "gateway-job", body: original, want: original, native: true},
+		{name: "host protocol", publicID: "gateway-job", body: original, optIn: true},
+		{name: "missing public ID", body: originalEvent, optIn: true, native: true, wantErr: "cannot replace native task submit stream ID"},
+		{name: "uninspected CR-delimited data", publicID: "gateway-job", body: ": comment\rdata: {\"id\":\"vendor-job\"}\n\n", optIn: true, native: true, wantErr: "unsupported line ending"},
+		{name: "malformed object after heartbeat", publicID: "gateway-job", body: heartbeat + malformed, want: heartbeat, optIn: true, native: true, stopped: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pluginSource := source
+			if tc.optIn {
+				pluginSource = strings.Replace(source, `submitResponseTypes:["sse"]`, `submitResponseTypes:["sse"],requiredCapabilities:["submit-sse-public-id@1"]`, 1)
+			}
+			plugin, err := pluginruntime.CompilePlugin(pluginSource, pluginruntime.Options{})
+			require.NoError(t, err)
+			recorder := httptest.NewRecorder()
+			stream := submitEventStream{frameLimit: maxTaskPluginPersistedJSONBytes}
+			if tc.native {
+				stream.client, _ = gin.CreateTestContext(recorder)
+				stream.client.Request = httptest.NewRequest(http.MethodPost, "/generate", nil)
+			}
+			resp := &http.Response{Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(tc.body))}
+			state, stopped, err := New(plugin).readSubmitEvents(t.Context(), resp, map[string]any{"publicTaskId": tc.publicID}, stream)
+			assert.Equal(t, tc.want, recorder.Body.String())
+			assert.Equal(t, tc.stopped, stopped)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			if !stopped {
+				assert.Equal(t, map[string]any{"taskId": "vendor-job", "eventId": "cursor-7"}, state)
+			}
+		})
+	}
+}
+
 // A native route that declares retainResult: false never persists its reply,
 // so a Base64 image reply may exceed the 1 MiB task data limit.
 func TestTaskSubmitReplyLimitFollowsRetainResult(t *testing.T) {
