@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"mime"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 // submitEventStream is how one SSE submission is read: client, when set, is
@@ -26,16 +28,12 @@ type submitEventStream struct {
 
 // readSubmitEvents owns only SSE framing and bounded JSON state. The plugin
 // interprets data, accumulates provider output and decides when it is
-// complete. On a native route each event also reaches the client as the
-// vendor sent it, before the plugin reads it. Once one has, the client holds
-// vendor output and the submission settles instead of failing. The upstream
-// finished the stream when the plugin reports completion or the upstream
-// closes it, and the last result settles as usual. A stream that stops any
-// other way (a read error, the idle timeout or the submission deadline, a
-// failed hook, invalid state or changes, a size limit) is reported stopped:
-// the plugin did not see the end of the vendor's work, so its usage cannot
-// lower the reserved charge, and the client's stream is cut off rather than
-// closed. A result that invalid changes left half applied is never published.
+// complete. Native clients receive frames before the plugin reads them.
+// Once a frame reaches the client, the submission settles instead of failing.
+// When the plugin reports completion or the upstream closes the stream, the
+// last result settles as usual. Other errors stop the stream and keep the
+// reserved charge because the plugin did not see the end of the vendor's work.
+// A result that invalid changes left half applied is never published.
 func (a *TaskAdaptor) readSubmitEvents(parent context.Context, resp *http.Response, driverContext map[string]any, stream submitEventStream) (_ any, stopped bool, _ error) {
 	mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if err != nil || mediaType != "text/event-stream" {
@@ -59,6 +57,8 @@ func (a *TaskAdaptor) readSubmitEvents(parent context.Context, resp *http.Respon
 		hook = "parseSubmitEventDelta"
 		accumulated = pluginruntime.NewJSONState(maxTaskPluginPersistedJSONBytes)
 	}
+	rewritePublicID := stream.client != nil && slices.Contains(a.plugin.Meta.RequiredCapabilities, pluginruntime.CapabilitySubmitSSEPublicID)
+	publicTaskID, _ := driverContext["publicTaskId"].(string)
 	var state any
 	var data []string
 	var eventName, lastID string
@@ -76,6 +76,12 @@ func (a *TaskAdaptor) readSubmitEvents(parent context.Context, resp *http.Respon
 		if firstLine {
 			line = strings.TrimPrefix(line, "\ufeff")
 			firstLine = false
+		}
+		// The scanner handles LF and CRLF. A remaining CR could create a new
+		// data line for the client that the host never inspected.
+		if rewritePublicID && strings.ContainsRune(line, '\r') {
+			readErr = fmt.Errorf("unsupported line ending in native task submit stream")
+			break
 		}
 		frameBytes += len(line) + 1
 		if int64(frameBytes) > stream.frameLimit {
@@ -102,8 +108,16 @@ func (a *TaskAdaptor) readSubmitEvents(parent context.Context, resp *http.Respon
 			continue
 		}
 		frameBytes = 0
+		payload := strings.Join(data, "\n")
 		if stream.client != nil {
-			relaySubmitEvent(stream.client, frame.String())
+			clientFrame := frame.String()
+			if rewritePublicID && len(data) != 0 {
+				clientFrame, readErr = rewriteSubmitEventPublicID(clientFrame, payload, publicTaskID)
+				if readErr != nil {
+					break
+				}
+			}
+			relaySubmitEvent(stream.client, clientFrame)
 			frame.Reset()
 			relayed = true
 		}
@@ -114,7 +128,7 @@ func (a *TaskAdaptor) readSubmitEvents(parent context.Context, resp *http.Respon
 		if eventName == "" {
 			eventName = "message"
 		}
-		event := map[string]any{"event": eventName, "id": lastID, "data": strings.Join(data, "\n")}
+		event := map[string]any{"event": eventName, "id": lastID, "data": payload}
 		value, err := a.plugin.Engine.Call(ctx, hook, driverContext, event, state)
 		if err != nil {
 			readErr = err
@@ -210,9 +224,56 @@ func (a *TaskAdaptor) readSubmitEvents(parent context.Context, resp *http.Respon
 	}
 }
 
-// relaySubmitEvent writes one upstream SSE event, as the vendor framed it, to
-// the client of a native route. The first event commits a 200 event-stream
-// response; a client that has left only misses the rest.
+// rewriteSubmitEventPublicID replaces only the JSON string token in its
+// original SSE data line. A valid string token cannot span joined data lines.
+func rewriteSubmitEventPublicID(frame, payload, publicTaskID string) (string, error) {
+	if !strings.HasPrefix(strings.TrimLeft(payload, " \t\r\n"), "{") {
+		return frame, nil
+	}
+	if err := common.UnmarshalJsonStr(payload, &struct{}{}); err != nil {
+		return "", fmt.Errorf("invalid JSON object in native task submit stream")
+	}
+	var upstreamID gjson.Result
+	idCount := 0
+	gjson.Parse(payload).ForEach(func(key, value gjson.Result) bool {
+		if key.Str == "id" {
+			idCount++
+			if value.Type == gjson.String {
+				upstreamID = value
+			}
+		}
+		return true
+	})
+	if !upstreamID.Exists() {
+		return frame, nil
+	}
+	if idCount != 1 || publicTaskID == "" {
+		return "", fmt.Errorf("cannot replace native task submit stream ID")
+	}
+	encoded, err := common.Marshal(publicTaskID)
+	if err != nil {
+		return "", fmt.Errorf("cannot encode native task submit stream public ID: %w", err)
+	}
+	frameOffset, payloadOffset := 0, 0
+	for line := range strings.SplitAfterSeq(frame, "\n") {
+		lineText, _ := strings.CutSuffix(line, "\n")
+		field, value, _ := strings.Cut(lineText, ":")
+		if field == "data" {
+			value, _ = strings.CutPrefix(value, " ")
+			start := upstreamID.Index - payloadOffset
+			if end := start + len(upstreamID.Raw); start >= 0 && end <= len(value) && value[start:end] == upstreamID.Raw {
+				start += frameOffset + len(lineText) - len(value)
+				return frame[:start] + string(encoded) + frame[start+len(upstreamID.Raw):], nil
+			}
+			payloadOffset += len(value) + 1
+		}
+		frameOffset += len(line)
+	}
+	return "", fmt.Errorf("cannot locate native task submit stream ID in SSE data")
+}
+
+// relaySubmitEvent writes one SSE event to a native client. The first event
+// commits a 200 event-stream response.
 func relaySubmitEvent(c *gin.Context, frame string) {
 	helper.SetEventStreamHeaders(c)
 	_, _ = c.Writer.WriteString(frame)

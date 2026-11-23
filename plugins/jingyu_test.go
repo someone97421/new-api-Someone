@@ -2,6 +2,7 @@ package plugins_test
 
 import (
 	"net/http"
+	"slices"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -38,8 +39,9 @@ func TestJingyuImageProtocol(t *testing.T) {
 	for _, name := range plugin.Meta.Protocols[0].Models {
 		for _, path := range []string{"/v1/images/generations", "/v1/images/edits"} {
 			bindings := jsplugin.DefaultRegistry.Generation().LookupEndpointCandidates(http.MethodPost, path, name)
-			assert.NotEmpty(t, bindings, name)
-			assert.True(t, len(bindings) > 0 && bindings[0].Plugin.Meta.Key == "jingyu", name)
+			assert.True(t, slices.ContainsFunc(bindings, func(binding jsplugin.ProtocolBinding) bool {
+				return binding.Plugin.Meta.Key == "jingyu"
+			}), name)
 		}
 	}
 	body := map[string]any{

@@ -12,19 +12,25 @@ import (
 )
 
 const (
-	CapabilityJSONClone      = "json-clone@1"
-	CapabilitySubmitSSEDelta = "submit-sse-delta@1"
-	CapabilityJSONOrder      = "json-order@1"
-	CapabilityDurationAuto   = "duration-auto@1"
-	MaxJSONToolBytes         = 1 << 20
-	maxJSONToolDepth         = 32
-	maxJSONToolNodes         = 32768
-	maxJSONChanges           = 256
+	CapabilityJSONClone         = "json-clone@1"
+	CapabilitySubmitSSEDelta    = "submit-sse-delta@1"
+	CapabilitySubmitSSEPublicID = "submit-sse-public-id@1"
+	CapabilityJSONOrder         = "json-order@1"
+	CapabilityDurationAuto      = "duration-auto@1"
+	MaxJSONToolBytes            = 1 << 20
+	maxJSONToolDepth            = 32
+	maxJSONToolNodes            = 32768
+	maxJSONChanges              = 256
 )
 
 // HasCapability describes host APIs independently of a plugin's mutable globals.
 func HasCapability(name string) bool {
-	return name == CapabilityJSONClone || name == CapabilitySubmitSSEDelta || name == CapabilityJSONOrder || name == CapabilityDurationAuto
+	switch name {
+	case CapabilityJSONClone, CapabilitySubmitSSEDelta, CapabilitySubmitSSEPublicID, CapabilityJSONOrder, CapabilityDurationAuto:
+		return true
+	default:
+		return false
+	}
 }
 
 // ValidateJSONPath checks a path into a JSON document by the rules of a JSON
