@@ -224,6 +224,7 @@ export interface AffiliateTransferRequest {
  * User wallet data
  */
 export interface UserWalletData {
+  is_subaccount?: boolean
   /** User ID */
   id: number
   /** Username */

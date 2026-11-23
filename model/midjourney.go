@@ -1,5 +1,11 @@
 package model
 
+import (
+	"database/sql/driver"
+
+	"github.com/QuantumNous/new-api/common"
+)
+
 type Midjourney struct {
 	Id          int    `json:"id"`
 	Code        int    `json:"code"`
@@ -24,8 +30,36 @@ type Midjourney struct {
 	Buttons     string `json:"buttons"`
 	Properties  string `json:"properties"`
 
-	TokenId          int `json:"-" gorm:"default:0"`
-	BillingChannelId int `json:"-" gorm:"default:0"`
+	TokenId          int                   `json:"-" gorm:"default:0"`
+	BillingChannelId int                   `json:"-" gorm:"default:0"`
+	PrivateData      MidjourneyPrivateData `json:"-" gorm:"column:private_data;type:text"`
+}
+
+type MidjourneyPrivateData struct {
+	WalletPayerId int `json:"wallet_payer_id,omitempty"`
+}
+
+func (p *MidjourneyPrivateData) Scan(value any) error {
+	*p = MidjourneyPrivateData{}
+	if data := jsonScanBytes(value); len(data) != 0 {
+		return common.Unmarshal(data, p)
+	}
+	return nil
+}
+
+func (p MidjourneyPrivateData) Value() (driver.Value, error) {
+	if p.WalletPayerId == 0 {
+		return nil, nil
+	}
+	data, err := common.Marshal(p)
+	return string(data), err
+}
+
+func (midjourney *Midjourney) WalletUserID() int {
+	if midjourney.PrivateData.WalletPayerId > 0 {
+		return midjourney.PrivateData.WalletPayerId
+	}
+	return midjourney.UserId
 }
 
 // TaskQueryParams 用于包含所有搜索条件的结构体，可以根据需求添加更多字段
@@ -192,7 +226,7 @@ func (midjourney *Midjourney) GetBillingChannelId() int {
 // UpdateWithStatus performs a conditional UPDATE guarded by fromStatus (CAS).
 // Uses Model().Select("*").Updates() to avoid GORM Save()'s INSERT fallback.
 func (midjourney *Midjourney) UpdateWithStatus(fromStatus string) (bool, error) {
-	result := DB.Model(midjourney).Where("status = ?", fromStatus).Select("*").Updates(midjourney)
+	result := DB.Model(midjourney).Where("status = ? AND progress <> ?", fromStatus, "100%").Select("*").Updates(midjourney)
 	if result.Error != nil {
 		return false, result.Error
 	}

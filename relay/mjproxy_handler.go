@@ -212,14 +212,14 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 		}
 	}
 
-	userQuota, err := model.GetUserQuota(info.UserId, false)
+	userQuota, err := model.GetUserQuota(info.WalletUserID(), false)
 	if err != nil {
 		return &dto.MidjourneyResponse{
 			Code:        4,
 			Description: err.Error(),
 		}
 	}
-
+	info.UserQuota = userQuota
 	if userQuota-priceData.Quota < 0 {
 		return &dto.MidjourneyResponse{
 			Code:        4,
@@ -535,14 +535,14 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		}
 	}
 
-	userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
+	userQuota, err := model.GetUserQuota(relayInfo.WalletUserID(), false)
 	if err != nil {
 		return &dto.MidjourneyResponse{
 			Code:        4,
 			Description: err.Error(),
 		}
 	}
-
+	relayInfo.UserQuota = userQuota
 	if consumeQuota && userQuota-priceData.Quota < 0 {
 		return &dto.MidjourneyResponse{
 			Code:        4,

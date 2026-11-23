@@ -11,10 +11,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const userCacheSchemaVersion = 2
+const userCacheSchemaVersion = 3
+
+const WalletPayerIDContextKey = "wallet_payer_id"
 
 type UserBase struct {
 	Id             int    `json:"id"`
+	ParentId       int    `json:"-"`
 	Group          string `json:"group"`
 	Email          string `json:"email"`
 	Quota          int    `json:"quota"`
@@ -32,13 +35,19 @@ func (user UserBase) cacheMAC() (string, error) {
 	user.Quota = 0
 	return authCacheMAC(getUserCacheKey(user.Id), struct {
 		User           UserBase
+		ParentId       int
 		AuthVersion    int64
 		CacheSchema    int
 		CacheExpiresAt int64
-	}{user, user.AuthVersion, user.CacheSchema, user.CacheExpiresAt})
+	}{user, user.ParentId, user.AuthVersion, user.CacheSchema, user.CacheExpiresAt})
 }
 
 func (user *UserBase) WriteContext(c *gin.Context) {
+	payerID := user.Id
+	if user.ParentId > 0 {
+		payerID = user.ParentId
+	}
+	c.Set(WalletPayerIDContextKey, payerID)
 	common.SetContextKey(c, constant.ContextKeyUserGroup, user.Group)
 	common.SetContextKey(c, constant.ContextKeyUserQuota, user.Quota)
 	common.SetContextKey(c, constant.ContextKeyUserStatus, user.Status)

@@ -92,9 +92,13 @@ export function ProfileHeader({ profile, loading }: ProfileHeaderProps) {
     tone: IconBadgeTone
   }[] = [
     {
-      label: t('Current Balance'),
-      value: formatQuota(profile.quota),
-      description: t('Remaining quota'),
+      label: profile.is_subaccount ? t('Wallet') : t('Current Balance'),
+      value: profile.is_subaccount
+        ? t('Shared wallet')
+        : formatQuota(profile.quota),
+      description: profile.is_subaccount
+        ? t('Usage is charged to the parent wallet.')
+        : t('Remaining quota'),
       icon: WalletCards,
       tone: 'success',
     },

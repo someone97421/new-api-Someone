@@ -19,12 +19,14 @@ For commercial licensing, please contact support@quantumnous.com
 import { api } from '@/lib/api'
 import type { CustomOAuthBinding } from '@/lib/oauth'
 import { authRequestOptions, authResult } from '@/lib/secure-verification'
+import { requireServerSuccess } from '@/lib/server-error-message'
 import type { LoginSession } from '@/stores/auth-store'
 
 import { normalizeUserSettings } from './lib/user-settings'
 import type {
   ApiResponse,
   UserProfile,
+  Subaccount,
   UpdateUserRequest,
   UpdateUserSettingsRequest,
   CheckinStatusResponse,
@@ -43,6 +45,41 @@ import type {
 export async function getUserProfile(): Promise<ApiResponse<UserProfile>> {
   const res = await api.get('/api/user/self')
   return res.data
+}
+
+const subaccountsUrl = '/api/user/self/subaccounts'
+
+export async function listSubaccounts(
+  signal: AbortSignal
+): Promise<Subaccount[]> {
+  const { data } = await api.get<ApiResponse<Subaccount[]>>(subaccountsUrl, {
+    signal,
+  })
+  return requireServerSuccess(data).data ?? []
+}
+
+export type SubaccountAction =
+  | { type: 'create'; username: string; password: string }
+  | { type: 'disable'; id: number }
+
+export async function changeSubaccount(
+  action: SubaccountAction,
+  signal: AbortSignal
+): Promise<AccountSecurityResult> {
+  const create = action.type === 'create'
+  const { data } = await api.post<ApiResponse>(
+    create ? subaccountsUrl : `${subaccountsUrl}/${action.id}/disable`,
+    create
+      ? { username: action.username, password: action.password }
+      : undefined,
+    {
+      ...authRequestOptions,
+      singleUseAuthorization: true,
+      signal,
+    }
+  )
+  requireServerSuccess(data)
+  return {}
 }
 
 /**

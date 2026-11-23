@@ -29,12 +29,15 @@ import { LanguagePreferencesCard } from './components/language-preferences-card'
 import { ProfileHeader } from './components/profile-header'
 import { ProfileSettingsCard } from './components/profile-settings-card'
 import { SidebarModulesCard } from './components/sidebar-modules-card'
+import { SubaccountsCard } from './components/subaccounts-card'
 import { useProfile } from './hooks'
 
 export function Profile() {
   const { profile, loading, refreshProfile } = useProfile()
   const { status } = useStatus()
   const permissions = useAuthStore((s) => s.auth.user?.permissions)
+  const currentUserId = useAuthStore((s) => s.auth.user?.id)
+  const sessionId = useAuthStore((s) => s.auth.session?.sid)
 
   const checkinEnabled = status?.checkin_enabled === true
   const turnstileEnabled = !!(
@@ -64,6 +67,13 @@ export function Profile() {
                   quotaRemindEnabled={quotaRemindEnabled}
                   quotaRemindThreshold={quotaRemindThreshold}
                 />
+                {profile?.is_subaccount === false &&
+                  profile.id === currentUserId && (
+                    <SubaccountsCard
+                      key={`${profile.id}:${sessionId}`}
+                      parentId={profile.id}
+                    />
+                  )}
                 <LanguagePreferencesCard
                   profile={profile}
                   onProfileUpdate={refreshProfile}
@@ -71,7 +81,7 @@ export function Profile() {
               </div>
 
               <div className='space-y-4 sm:space-y-6 xl:sticky xl:top-6'>
-                {checkinEnabled && (
+                {checkinEnabled && profile && !profile.is_subaccount && (
                   <CheckinCalendarCard
                     checkinEnabled={checkinEnabled}
                     turnstileEnabled={turnstileEnabled}

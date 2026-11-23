@@ -45,28 +45,22 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 
 	logger.LogInfo(ctx, common.LogText("unfinished tasks found: %v", len(tasks)))
 	taskChannelM := make(map[int][]string)
-	taskM := make(map[string]*model.Midjourney)
-	nullTaskIds := make([]int, 0)
+	taskM := make(map[int]map[string][]*model.Midjourney)
 	for _, task := range tasks {
 		if task.MjId == "" {
-			// 统计失败的未完成任务
-			nullTaskIds = append(nullTaskIds, task.Id)
+			summary.NullTasksFailed++
+			failMidjourneyTask(ctx, task, "")
 			continue
 		}
-		taskM[task.MjId] = task
-		taskChannelM[task.ChannelId] = append(taskChannelM[task.ChannelId], task.MjId)
-	}
-	if len(nullTaskIds) > 0 {
-		summary.NullTasksFailed = len(nullTaskIds)
-		err := model.MjBulkUpdateByTaskIds(nullTaskIds, map[string]any{
-			"status":   "FAILURE",
-			"progress": "100%",
-		})
-		if err != nil {
-			logger.LogError(ctx, common.LogText("Fix null mj_id task error: %v", err))
-		} else {
-			logger.LogInfo(ctx, common.LogText("Fix null mj_id task success: %v", nullTaskIds))
+		channelTasks := taskM[task.ChannelId]
+		if channelTasks == nil {
+			channelTasks = make(map[string][]*model.Midjourney)
+			taskM[task.ChannelId] = channelTasks
 		}
+		if len(channelTasks[task.MjId]) == 0 {
+			taskChannelM[task.ChannelId] = append(taskChannelM[task.ChannelId], task.MjId)
+		}
+		channelTasks[task.MjId] = append(channelTasks[task.MjId], task)
 	}
 	if len(taskChannelM) == 0 {
 		return summary
@@ -90,13 +84,10 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 		midjourneyChannel, err := model.CacheGetChannel(channelId)
 		if err != nil {
 			logger.LogError(ctx, common.LogText("CacheGetChannel: %v", err))
-			err := model.MjBulkUpdate(taskIds, map[string]any{
-				"fail_reason": "Failed to get the channel information. Please contact the administrator",
-				"status":      "FAILURE",
-				"progress":    "100%",
-			})
-			if err != nil {
-				logger.LogInfo(ctx, common.LogText("UpdateMidjourneyTask error: %v", err))
+			for _, tasks := range taskM[channelId] {
+				for _, task := range tasks {
+					failMidjourneyTask(ctx, task, "Failed to get the channel information. Please contact the administrator")
+				}
 			}
 			continue
 		}
@@ -150,70 +141,76 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 		req.Body.Close()
 		cancel()
 
-		for _, responseItem := range responseItems {
-			task := taskM[responseItem.MjId]
-			if task == nil {
-				logger.LogWarn(ctx, common.LogText("Midjourney task response ignored: unknown mj_id=%s", responseItem.MjId))
+		for _, response := range responseItems {
+			matchedTasks := taskM[channelId][response.MjId]
+			if len(matchedTasks) == 0 {
+				logger.LogWarn(ctx, common.LogText("Midjourney task response ignored: unknown mj_id=%s", response.MjId))
 				continue
 			}
+			for _, task := range matchedTasks {
+				if task.Progress == "100%" {
+					continue
+				}
+				responseItem := response
+				useTime := (time.Now().UnixNano() / int64(time.Millisecond)) - task.SubmitTime
+				// 如果时间超过一小时，且进度不是100%，则认为任务失败
+				if useTime > 3600000 && task.Progress != "100%" {
+					responseItem.FailReason = "Upstream task timed out (over 1 hour)"
+					responseItem.Status = "FAILURE"
+				}
+				if !checkMjTaskNeedUpdate(task, responseItem) {
+					continue
+				}
+				preStatus := task.Status
+				task.Code = 1
+				task.Progress = responseItem.Progress
+				task.PromptEn = responseItem.PromptEn
+				task.State = responseItem.State
+				task.SubmitTime = responseItem.SubmitTime
+				task.StartTime = responseItem.StartTime
+				task.FinishTime = responseItem.FinishTime
+				task.ImageUrl = responseItem.ImageUrl
+				task.Status = responseItem.Status
+				task.FailReason = responseItem.FailReason
+				if responseItem.Properties != nil {
+					propertiesStr, _ := common.Marshal(responseItem.Properties)
+					task.Properties = string(propertiesStr)
+				}
+				if responseItem.Buttons != nil {
+					buttonStr, _ := common.Marshal(responseItem.Buttons)
+					task.Buttons = string(buttonStr)
+				}
+				// 映射 VideoUrl
+				task.VideoUrl = responseItem.VideoUrl
 
-			useTime := (time.Now().UnixNano() / int64(time.Millisecond)) - task.SubmitTime
-			// 如果时间超过一小时，且进度不是100%，则认为任务失败
-			if useTime > 3600000 && task.Progress != "100%" {
-				responseItem.FailReason = "Upstream task timed out (over 1 hour)"
-				responseItem.Status = "FAILURE"
-			}
-			if !checkMjTaskNeedUpdate(task, responseItem) {
-				continue
-			}
-			preStatus := task.Status
-			task.Code = 1
-			task.Progress = responseItem.Progress
-			task.PromptEn = responseItem.PromptEn
-			task.State = responseItem.State
-			task.SubmitTime = responseItem.SubmitTime
-			task.StartTime = responseItem.StartTime
-			task.FinishTime = responseItem.FinishTime
-			task.ImageUrl = responseItem.ImageUrl
-			task.Status = responseItem.Status
-			task.FailReason = responseItem.FailReason
-			if responseItem.Properties != nil {
-				propertiesStr, _ := common.Marshal(responseItem.Properties)
-				task.Properties = string(propertiesStr)
-			}
-			if responseItem.Buttons != nil {
-				buttonStr, _ := common.Marshal(responseItem.Buttons)
-				task.Buttons = string(buttonStr)
-			}
-			// 映射 VideoUrl
-			task.VideoUrl = responseItem.VideoUrl
-
-			// 映射 VideoUrls - 将数组序列化为 JSON 字符串
-			if responseItem.VideoUrls != nil && len(responseItem.VideoUrls) > 0 {
-				videoUrlsStr, err := common.Marshal(responseItem.VideoUrls)
-				if err != nil {
-					logger.LogError(ctx, common.LogText("failed to serialize VideoUrls: %v", err))
-					task.VideoUrls = "[]" // 失败时设置为空数组
+				// 映射 VideoUrls - 将数组序列化为 JSON 字符串
+				if responseItem.VideoUrls != nil && len(responseItem.VideoUrls) > 0 {
+					videoUrlsStr, err := common.Marshal(responseItem.VideoUrls)
+					if err != nil {
+						logger.LogError(ctx, common.LogText("failed to serialize VideoUrls: %v", err))
+						task.VideoUrls = "[]" // 失败时设置为空数组
+					} else {
+						task.VideoUrls = string(videoUrlsStr)
+					}
 				} else {
-					task.VideoUrls = string(videoUrlsStr)
+					task.VideoUrls = "" // 空值时清空字段
 				}
-			} else {
-				task.VideoUrls = "" // 空值时清空字段
-			}
 
-			shouldReturnQuota := false
-			if (task.Progress != "100%" && responseItem.FailReason != "") || (task.Progress == "100%" && task.Status == "FAILURE") {
-				logger.LogInfo(ctx, common.LogText("%s failed: %s", task.MjId, task.FailReason))
-				task.Progress = "100%"
-				if task.Quota != 0 {
-					shouldReturnQuota = true
+				shouldReturnQuota := false
+				if task.Status == "FAILURE" || (task.Progress != "100%" && task.FailReason != "") {
+					logger.LogInfo(ctx, common.LogText("%s failed: %s", task.MjId, task.FailReason))
+					task.Status = "FAILURE"
+					task.Progress = "100%"
+					if task.Quota != 0 {
+						shouldReturnQuota = true
+					}
 				}
-			}
-			won, err := task.UpdateWithStatus(preStatus)
-			if err != nil {
-				logger.LogError(ctx, common.LogText("UpdateMidjourneyTask task error: %s", err.Error()))
-			} else if won && shouldReturnQuota {
-				service.RefundMidjourneyQuota(ctx, task, "Composition failed")
+				won, err := task.UpdateWithStatus(preStatus)
+				if err != nil {
+					logger.LogError(ctx, common.LogText("UpdateMidjourneyTask task error: %s", err.Error()))
+				} else if won && shouldReturnQuota {
+					service.RefundMidjourneyQuota(ctx, task, "Composition failed")
+				}
 			}
 		}
 	}
@@ -221,6 +218,21 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 		report(totalChannels, totalChannels)
 	}
 	return summary
+}
+
+func failMidjourneyTask(ctx context.Context, task *model.Midjourney, reason string) {
+	previousStatus := task.Status
+	task.Status = "FAILURE"
+	task.Progress = "100%"
+	if reason != "" {
+		task.FailReason = reason
+	}
+	won, err := task.UpdateWithStatus(previousStatus)
+	if err != nil {
+		logger.LogError(ctx, common.LogText("UpdateMidjourneyTask task error: %s", err.Error()))
+	} else if won {
+		service.RefundMidjourneyQuota(ctx, task, task.FailReason)
+	}
 }
 
 func checkMjTaskNeedUpdate(oldTask *model.Midjourney, newTask dto.MidjourneyDto) bool {

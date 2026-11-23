@@ -90,21 +90,6 @@ func reportFinalTask(task *model.Task) {
 	}
 }
 
-// reportFailedTasks reports tasks failed in one bulk update with reason.
-func reportFailedTasks(tasks []*model.Task, reason string) {
-	now := time.Now().Unix()
-	for _, task := range tasks {
-		if task == nil || task.PrivateData.RequestPlugins == nil {
-			continue
-		}
-		task.Status, task.Progress, task.FailReason = model.TaskStatusFailure, "100%", reason
-		if task.FinishTime == 0 {
-			task.FinishTime = now
-		}
-		reportFinalTask(task)
-	}
-}
-
 // sweepTimedOutTasks 在主轮询之前独立清理超时任务。
 // 每次最多处理 100 条，剩余的下个周期继续处理。
 // 使用 per-task CAS (UpdateWithStatus) 防止覆盖被正常轮询已推进的任务。
@@ -168,6 +153,19 @@ type TaskPollSummary struct {
 	NullTasksFailed  int `json:"null_tasks_failed"`
 }
 
+type taskPollChannel struct {
+	ids   []string
+	tasks map[string]*model.Task
+}
+
+func taskPollChannels(channelIDs map[int][]string, tasks map[string]*model.Task) map[int]taskPollChannel {
+	channels := make(map[int]taskPollChannel, len(channelIDs))
+	for channelID, ids := range channelIDs {
+		channels[channelID] = taskPollChannel{ids: ids, tasks: tasks}
+	}
+	return channels
+}
+
 // RunTaskPollingOnce performs one async-task (Suno/video) polling pass
 // synchronously. It honors ctx cancellation (the system-task runner cancels it
 // when the lease is lost) and, when report is non-nil, reports progress as
@@ -205,39 +203,33 @@ func RunTaskPollingOnce(ctx context.Context, report func(processed, total int)) 
 			continue
 		}
 		summary.PlatformsScanned++
-		taskChannelM := make(map[int][]string)
-		taskM := make(map[string]*model.Task)
-		nullTaskIds := make([]int64, 0)
+		channels := make(map[int]taskPollChannel)
 		var nullTasks []*model.Task
 		for _, task := range tasks {
 			upstreamID := task.GetUpstreamTaskID()
 			if upstreamID == "" {
-				// 统计失败的未完成任务
-				nullTaskIds = append(nullTaskIds, task.ID)
 				nullTasks = append(nullTasks, task)
 				continue
 			}
-			taskM[upstreamID] = task
-			taskChannelM[task.ChannelId] = append(taskChannelM[task.ChannelId], upstreamID)
+			channel := channels[task.ChannelId]
+			if channel.tasks == nil {
+				channel.tasks = make(map[string]*model.Task)
+			}
+			channel.tasks[upstreamID] = task
+			channel.ids = append(channel.ids, upstreamID)
+			channels[task.ChannelId] = channel
 		}
-		if len(nullTaskIds) > 0 {
-			summary.NullTasksFailed += len(nullTaskIds)
-			err := model.TaskBulkUpdateByID(nullTaskIds, map[string]any{
-				"status":   "FAILURE",
-				"progress": "100%",
-			})
-			if err != nil {
+		if len(nullTasks) > 0 {
+			summary.NullTasksFailed += len(nullTasks)
+			if err := failTasksFromPoll(ctx, nil, nullTasks, ""); err != nil {
 				logger.LogError(ctx, common.LogText("Fix null task_id task error: %v", err))
-			} else {
-				logger.LogInfo(ctx, common.LogText("Fix null task_id task success: %v", nullTaskIds))
-				reportFailedTasks(nullTasks, "")
 			}
 		}
-		if len(taskChannelM) == 0 {
+		if len(channels) == 0 {
 			continue
 		}
 
-		DispatchPlatformUpdate(ctx, platform, taskChannelM, taskM)
+		dispatchPlatformUpdate(ctx, platform, channels)
 	}
 	if report != nil && ctx.Err() == nil {
 		report(totalPlatforms, totalPlatforms)
@@ -248,6 +240,10 @@ func RunTaskPollingOnce(ctx context.Context, report func(processed, total int)) 
 
 // DispatchPlatformUpdate 按平台分发轮询更新
 func DispatchPlatformUpdate(ctx context.Context, platform constant.TaskPlatform, taskChannelM map[int][]string, taskM map[string]*model.Task) {
+	dispatchPlatformUpdate(ctx, platform, taskPollChannels(taskChannelM, taskM))
+}
+
+func dispatchPlatformUpdate(ctx context.Context, platform constant.TaskPlatform, channels map[int]taskPollChannel) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -257,22 +253,26 @@ func DispatchPlatformUpdate(ctx context.Context, platform constant.TaskPlatform,
 	}
 	adaptor := GetTaskAdaptorFunc(platform)
 	if batchAdaptor, ok := adaptor.(BatchTaskPollingAdaptor); ok && batchAdaptor.FetchMode() == "batch" {
-		if err := UpdateBatchTasks(ctx, batchAdaptor, taskChannelM, taskM); err != nil {
+		if err := updateBatchChannels(ctx, batchAdaptor, channels); err != nil {
 			common.SysLog(common.LogText("UpdateBatchTasks fail: %s", err))
 		}
 		return
 	}
-	if err := UpdateVideoTasks(ctx, platform, taskChannelM, taskM); err != nil {
+	if err := updateVideoChannels(ctx, platform, channels); err != nil {
 		common.SysLog(common.LogText("UpdateVideoTasks fail: %s", err))
 	}
 }
 
 func UpdateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, taskChannelM map[int][]string, taskM map[string]*model.Task) error {
-	for channelId, taskIds := range taskChannelM {
+	return updateBatchChannels(ctx, adaptor, taskPollChannels(taskChannelM, taskM))
+}
+
+func updateBatchChannels(ctx context.Context, adaptor BatchTaskPollingAdaptor, channels map[int]taskPollChannel) error {
+	for channelId, channel := range channels {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		err := updateBatchTasks(ctx, adaptor, channelId, taskIds, taskM)
+		err := updateBatchTasks(ctx, adaptor, channelId, channel.ids, channel.tasks)
 		if err != nil {
 			logger.LogError(ctx, common.LogText("channel #%d failed to update async tasks: %s", channelId, err.Error()))
 		}
@@ -291,35 +291,16 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 	ch, err := model.CacheGetChannel(channelId)
 	if err != nil {
 		common.SysLog(common.LogText("CacheGetChannel: %v", err))
-		// Collect DB primary key IDs for bulk update (taskIds are upstream IDs, not task_id column values)
-		var failedIDs []int64
-		for _, upstreamID := range taskIds {
-			if t, ok := taskM[upstreamID]; ok {
-				failedIDs = append(failedIDs, t.ID)
-			}
-		}
-		err = model.TaskBulkUpdateByID(failedIDs, map[string]any{
-			"fail_reason": "Failed to get the channel information. Please contact the administrator",
-			"status":      "FAILURE",
-			"progress":    "100%",
-		})
-		if err != nil {
-			common.SysLog(common.LogText("UpdateSunoTask error: %v", err))
-		} else {
-			reportFailedTasks(bulkFailedTasks(taskIds, taskM), "Failed to get the channel information. Please contact the administrator")
-		}
-		return err
+		return failTasksFromPoll(ctx, nil, channelPollTasks(channelId, taskIds, taskM), "Failed to get the channel information. Please contact the administrator")
 	}
 	proxy := ch.GetSetting().Proxy
 	baseURL := ch.GetBaseURL()
 	if baseURL == "" {
 		baseURL = constant.GetChannelBaseURL(ch.Type)
 	}
-	tasks := make([]*model.Task, 0, len(taskIds))
-	for _, upstreamID := range taskIds {
-		if task := taskM[upstreamID]; task != nil {
-			tasks = append(tasks, task)
-		}
+	tasks := channelPollTasks(channelId, taskIds, taskM)
+	if len(tasks) == 0 {
+		return nil
 	}
 	// The channel type tells plugin adaptors whether the upstream is another
 	// New API gateway, the same signal submission derives from the request.
@@ -472,24 +453,28 @@ func pollTaskBatch(ctx context.Context, adaptor BatchTaskPollingAdaptor, channel
 
 // UpdateVideoTasks 按渠道更新所有视频任务
 func UpdateVideoTasks(ctx context.Context, platform constant.TaskPlatform, taskChannelM map[int][]string, taskM map[string]*model.Task) error {
-	channelIDs := make([]int, 0, len(taskChannelM))
-	for channelID := range taskChannelM {
+	return updateVideoChannels(ctx, platform, taskPollChannels(taskChannelM, taskM))
+}
+
+func updateVideoChannels(ctx context.Context, platform constant.TaskPlatform, channels map[int]taskPollChannel) error {
+	channelIDs := make([]int, 0, len(channels))
+	for channelID := range channels {
 		channelIDs = append(channelIDs, channelID)
 	}
 	sort.Ints(channelIDs)
 
 	var wg sync.WaitGroup
 	for _, channelId := range channelIDs {
-		taskIds := taskChannelM[channelId]
-		if len(taskIds) == 0 {
+		channel := channels[channelId]
+		if len(channel.ids) == 0 {
 			continue
 		}
-		taskIds = append([]string(nil), taskIds...)
+		taskIds := append([]string(nil), channel.ids...)
 
 		wg.Add(1)
 		gopool.Go(func() {
 			defer wg.Done()
-			if err := updateVideoTasks(ctx, platform, channelId, taskIds, taskM); err != nil {
+			if err := updateVideoTasks(ctx, platform, channelId, taskIds, channel.tasks); err != nil {
 				logger.LogError(ctx, common.LogText("Channel #%d failed to update video async tasks: %s", channelId, err.Error()))
 			}
 		})
@@ -511,22 +496,8 @@ func updateVideoTasks(ctx context.Context, platform constant.TaskPlatform, chann
 	}
 	cacheGetChannel, err := model.CacheGetChannel(channelId)
 	if err != nil {
-		// Collect DB primary key IDs for bulk update (taskIds are upstream IDs, not task_id column values)
-		var failedIDs []int64
-		for _, upstreamID := range taskIds {
-			if t, ok := taskM[upstreamID]; ok {
-				failedIDs = append(failedIDs, t.ID)
-			}
-		}
-		errUpdate := model.TaskBulkUpdateByID(failedIDs, map[string]any{
-			"fail_reason": "Failed to get the channel information. Please contact the administrator",
-			"status":      "FAILURE",
-			"progress":    "100%",
-		})
-		if errUpdate != nil {
-			common.SysLog(common.LogText("UpdateVideoTask error: %v", errUpdate))
-		} else {
-			reportFailedTasks(bulkFailedTasks(taskIds, taskM), "Failed to get the channel information. Please contact the administrator")
+		if updateErr := failTasksFromPoll(ctx, nil, channelPollTasks(channelId, taskIds, taskM), "Failed to get the channel information. Please contact the administrator"); updateErr != nil {
+			common.SysLog(common.LogText("UpdateVideoTask error: %v", updateErr))
 		}
 		return fmt.Errorf("CacheGetChannel failed: %w", err)
 	}
@@ -578,9 +549,8 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	proxy := ch.GetSetting().Proxy
 
 	task := taskM[taskId]
-	if task == nil {
-		logger.LogError(ctx, common.LogText("Task %s not found in taskM", taskId))
-		return fmt.Errorf("task %s not found", taskId)
+	if task == nil || task.ChannelId != ch.Id {
+		return fmt.Errorf("task %s not found for channel %d", taskId, ch.Id)
 	}
 	if task.Status == model.TaskStatusResubmitting {
 		return model.DB.WithContext(ctx).First(task, task.ID).Error
@@ -811,20 +781,21 @@ func tryTaskPluginResubmit(ctx context.Context, adaptor TaskPollingAdaptor, task
 // finalizeTerminalTask 终态统一收尾（状态 CAS 赢家调用，恰好一次）：采样 + 结算 + 失败兜底退款。
 func finalizeTerminalTask(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, taskResult *relaycommon.TaskInfo) {
 	perfmetrics.RecordTaskResult(task, taskResult)
-	billingSettled := settleTaskBillingOnComplete(ctx, adaptor, task, taskResult)
+	billingSettled := adaptor != nil && settleTaskBillingOnComplete(ctx, adaptor, task, taskResult)
 	if task.Status == model.TaskStatusFailure && !billingSettled && task.Quota != 0 {
 		RefundTaskQuota(ctx, task, task.FailReason)
 	}
 	reportFinalTask(task)
 }
 
-// bulkFailedTasks are the tasks of upstream ids a bulk update failed.
-func bulkFailedTasks(upstreamIDs []string, tasks map[string]*model.Task) []*model.Task {
-	failed := make([]*model.Task, 0, len(upstreamIDs))
+func channelPollTasks(channelID int, upstreamIDs []string, tasks map[string]*model.Task) []*model.Task {
+	selected := make([]*model.Task, 0, len(upstreamIDs))
 	for _, upstreamID := range upstreamIDs {
-		failed = append(failed, tasks[upstreamID])
+		if task := tasks[upstreamID]; task != nil && task.ChannelId == channelID {
+			selected = append(selected, task)
+		}
 	}
-	return failed
+	return selected
 }
 
 func redactVideoResponseBody(body []byte) []byte {

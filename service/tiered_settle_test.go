@@ -522,6 +522,33 @@ func TestBillingSessionReserveWalletTopUpDecrementsBalance(t *testing.T) {
 	assert.Equal(t, 450_000, userQuota)
 }
 
+func TestSubaccountWalletSettlement(t *testing.T) {
+	truncate(t)
+	const parentID, childID = 703, 704
+	seedUser(t, parentID, 100)
+	require.NoError(t, model.DB.Create(&model.User{Id: childID, ParentId: parentID, Username: "wallet-child", AffCode: "child703", Status: common.UserStatusEnabled}).Error)
+	const tokenID, key = 704, "subaccount-test-token"
+	seedToken(t, tokenID, childID, key, 100)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{UserId: childID, WalletPayerId: parentID, TokenId: tokenID, TokenKey: key}
+	info.UserSetting.BillingPreference = "subscription_only"
+	session, apiErr := NewBillingSession(c, info, 60)
+	require.Nil(t, apiErr)
+	require.NoError(t, session.Settle(40))
+	remaining, err := model.GetUserQuota(parentID, false)
+	require.NoError(t, err)
+	assert.Equal(t, 60, remaining)
+	_, apiErr = NewBillingSession(c, info, 61)
+	require.NotNil(t, apiErr)
+	childBalance, err := model.GetUserQuota(childID, false)
+	require.NoError(t, err)
+	token, err := model.GetTokenById(tokenID)
+	require.NoError(t, err)
+	assert.Equal(t, 60, token.RemainQuota)
+	assert.Zero(t, childBalance)
+}
+
 func TestTryTieredSettleUsesFinalGroupAfterRetry(t *testing.T) {
 	const expr = `tier("base", p)`
 	tests := []struct {

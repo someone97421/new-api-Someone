@@ -141,7 +141,7 @@ func TestPrivateChannelMediaDoesNotTrustOtherURLs(t *testing.T) {
 			require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", task.ChannelId).Update("base_url", baseURL).Error)
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
 			c.Request = httptest.NewRequest(http.MethodGet, "/content", nil)
-			err := proxyTaskMedia(c, task, descriptor)
+			err := proxyTaskMedia(c, task, "", descriptor)
 			var proxyErr *taskMediaProxyError
 			require.ErrorAs(t, err, &proxyErr)
 			assert.Equal(t, "artifact_request_rejected", proxyErr.code)
@@ -168,7 +168,7 @@ func TestPrivateChannelMediaRejectsCrossOriginRedirect(t *testing.T) {
 	require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", task.ChannelId).Update("base_url", source.URL).Error)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodGet, "/content", nil)
-	err := proxyTaskMedia(c, task, &relaychannel.TaskContentRequest{
+	err := proxyTaskMedia(c, task, "", &relaychannel.TaskContentRequest{
 		URL: source.URL, Method: http.MethodGet, Headers: map[string]string{"Authorization": "Bearer provider-key"},
 	})
 	var proxyErr *taskMediaProxyError
@@ -197,7 +197,7 @@ func TestPrivateChannelMediaUsesChannelProxy(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodGet, "/content", nil)
-	require.NoError(t, proxyTaskMedia(c, task, &relaychannel.TaskContentRequest{
+	require.NoError(t, proxyTaskMedia(c, task, "", &relaychannel.TaskContentRequest{
 		URL: "http://private-upstream.invalid:8080/video", Headers: map[string]string{"Authorization": "Bearer provider-key"},
 	}))
 	assert.Equal(t, http.StatusOK, recorder.Code)
@@ -224,7 +224,7 @@ func TestPrivateChannelMediaUsesChannelTLSSettings(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
 			c.Request = httptest.NewRequest(http.MethodGet, "/content", nil)
-			err = proxyTaskMedia(c, task, &relaychannel.TaskContentRequest{URL: upstream.URL + "/video"})
+			err = proxyTaskMedia(c, task, "", &relaychannel.TaskContentRequest{URL: upstream.URL + "/video"})
 			if !skipVerify {
 				var proxyErr *taskMediaProxyError
 				require.ErrorAs(t, err, &proxyErr)

@@ -28,6 +28,7 @@ export type UserPermissions = {
 }
 
 export interface AuthUser {
+  is_subaccount?: boolean
   has_password?: boolean
   id: number
   username: string

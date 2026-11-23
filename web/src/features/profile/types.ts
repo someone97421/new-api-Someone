@@ -35,6 +35,7 @@ export interface ApiResponse<T = unknown> {
  * User profile data
  */
 export interface UserProfile {
+  is_subaccount?: boolean
   has_password?: boolean
   permissions?: UserPermissions
   /** User ID */
@@ -86,6 +87,11 @@ export interface UserProfile {
   /** LinuxDO ID (OAuth) */
   linux_do_id?: string
 }
+
+export type Subaccount = Pick<
+  UserProfile,
+  'id' | 'username' | 'status' | 'used_quota' | 'request_count'
+>
 
 /**
  * Notification type

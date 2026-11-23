@@ -86,6 +86,7 @@ type RelayInfo struct {
 	TokenKey          string
 	TokenGroup        string
 	UserId            int
+	WalletPayerId     int
 	UsingGroup        string // 使用的分组，当auto跨分组重试时，会变动
 	UserGroup         string // 用户所在分组
 	TokenUnlimited    bool
@@ -645,12 +646,13 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		Request:         request,
 		ReasoningEffort: reasoningEffort,
 
-		RequestId:  reqId,
-		UserId:     common.GetContextKeyInt(c, constant.ContextKeyUserId),
-		UsingGroup: common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
-		UserGroup:  common.GetContextKeyString(c, constant.ContextKeyUserGroup),
-		UserQuota:  common.GetContextKeyInt(c, constant.ContextKeyUserQuota),
-		UserEmail:  common.GetContextKeyString(c, constant.ContextKeyUserEmail),
+		RequestId:     reqId,
+		UserId:        common.GetContextKeyInt(c, constant.ContextKeyUserId),
+		WalletPayerId: c.GetInt("wallet_payer_id"),
+		UsingGroup:    common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
+		UserGroup:     common.GetContextKeyString(c, constant.ContextKeyUserGroup),
+		UserQuota:     common.GetContextKeyInt(c, constant.ContextKeyUserQuota),
+		UserEmail:     common.GetContextKeyString(c, constant.ContextKeyUserEmail),
 
 		OriginModelName: originModelName,
 
@@ -1345,4 +1347,12 @@ func RemoveGeminiDisabledFields(jsonData []byte) ([]byte, error) {
 		}
 	}
 	return doc.Bytes(), nil
+}
+
+// WalletUserID identifies the wallet charged for this request, including later refunds.
+func (info *RelayInfo) WalletUserID() int {
+	if info.WalletPayerId > 0 {
+		return info.WalletPayerId
+	}
+	return info.UserId
 }

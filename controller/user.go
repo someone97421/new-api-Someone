@@ -473,6 +473,17 @@ func GetSelf(c *gin.Context) {
 		return
 	}
 	responseData := buildSelfUserData(user)
+	if user.ParentId > 0 {
+		parent, err := model.GetUserCache(user.ParentId)
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			common.ApiErrorT(c, "Please try again later.")
+			return
+		}
+		responseData["quota"] = 0
+		if parent != nil && parent.Status == common.UserStatusEnabled && parent.ParentId == 0 {
+			responseData["quota"] = parent.Quota
+		}
+	}
 	// The authenticated role is loaded from GetUserCache. It should equal the
 	// row role, but use it for capabilities so GetSelf and login/refresh remain
 	// consistent with the authorization decision made for this request.
@@ -502,6 +513,7 @@ func buildSelfUserData(user *model.User) map[string]any {
 		"has_password":      user.HasPassword,
 		"role":              user.Role,
 		"status":            user.Status,
+		"is_subaccount":     user.ParentId > 0,
 		"email":             user.Email,
 		"github_id":         user.GitHubId,
 		"discord_id":        user.DiscordId,

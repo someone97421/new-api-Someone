@@ -22,8 +22,14 @@ func GetSubscription(c *gin.Context) {
 		usedQuota = token.UsedQuota
 	} else {
 		userId := c.GetInt("id")
-		remainQuota, err = model.GetUserQuota(userId, false)
-		usedQuota, err = model.GetUserUsedQuota(userId)
+		payerID := c.GetInt(model.WalletPayerIDContextKey)
+		if payerID == 0 {
+			payerID = userId
+		}
+		remainQuota, err = model.GetUserQuota(payerID, false)
+		if err == nil {
+			usedQuota, err = model.GetUserUsedQuota(userId)
+		}
 	}
 	if expiredTime <= 0 {
 		expiredTime = 0

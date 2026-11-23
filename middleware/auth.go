@@ -49,6 +49,28 @@ func validUserInfo(username string, role int) bool {
 	return true
 }
 
+// Account access requires an active owner for a shared wallet.
+func accountEnabled(user *model.UserBase) bool {
+	if user.Status != common.UserStatusEnabled {
+		return false
+	}
+	if user.ParentId == 0 {
+		return true
+	}
+	parent, err := model.GetUserCache(user.ParentId)
+	return err == nil && parent.Status == common.UserStatusEnabled && parent.ParentId == 0
+}
+
+func WalletOwnerRequired() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.GetInt(model.WalletPayerIDContextKey) != c.GetInt("id") || c.GetInt("id") <= 0 {
+			abortWithWebMessage(c, http.StatusForbidden, "WALLET_OWNER_REQUIRED", common.NewMessage("Unauthorized, insufficient privileges"))
+			return
+		}
+		c.Next()
+	}
+}
+
 func authHelper(c *gin.Context, minRole int) {
 	if _, started := c.Get(accessTokenAuditContextKey); !started {
 		defer finishAccessTokenAudit(c)
@@ -58,7 +80,7 @@ func authHelper(c *gin.Context, minRole int) {
 		writeDashboardAuthError(c, err)
 		return
 	}
-	if user.Status != common.UserStatusEnabled {
+	if !accountEnabled(user) {
 		abortWithWebMessage(c, http.StatusUnauthorized, "AUTH_USER_DISABLED", common.NewMessage("User has been banned"))
 		return
 	}
@@ -115,11 +137,11 @@ func TryUserAuth() func(c *gin.Context) {
 		var lookup *accessTokenLookup
 		if credentialKind == dashboardCredentialPAT {
 			lookup = requestAccessTokenLookup(c)
-			if user.Status != common.UserStatusEnabled || !enforceAccessTokenRoute(c, lookup, false) {
+			if !enforceAccessTokenRoute(c, lookup, false) {
 				credentialKind = dashboardCredentialUnmatched
 			}
 		}
-		if credentialKind != dashboardCredentialUnmatched {
+		if credentialKind != dashboardCredentialUnmatched && accountEnabled(user) {
 			setDashboardAuthContext(c, user, identity, credentialKind == dashboardCredentialPAT)
 			if credentialKind == dashboardCredentialPAT {
 				setAccessTokenContext(c, lookup)
@@ -518,13 +540,14 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 			c.Abort()
 			return
 		}
-		if userCache.Status != common.UserStatusEnabled {
+		if !accountEnabled(userCache) {
 			common.ApiErrorStatus(c, http.StatusForbidden, errors.New(common.TranslateMessage(c, i18n.MsgAuthUserBanned)))
 			c.Abort()
 			return
 		}
 
 		c.Set("id", token.UserId)
+		userCache.WriteContext(c)
 		c.Set("token_id", token.Id)
 		c.Set("token_key", token.Key)
 		c.Next()
@@ -622,8 +645,7 @@ func TokenAuth() func(c *gin.Context) {
 				common.TranslateMessage(c, i18n.MsgDatabaseError))
 			return
 		}
-		userEnabled := userCache.Status == common.UserStatusEnabled
-		if !userEnabled {
+		if !accountEnabled(userCache) {
 			abortWithOpenAiMessage(c, http.StatusForbidden, common.TranslateMessage(c, i18n.MsgAuthUserBanned))
 			return
 		}

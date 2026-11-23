@@ -641,19 +641,21 @@ func TestMidjourneyRefundRestoresEveryAccountingElementOnBillingChannel(t *testi
 	truncate(t)
 	ctx := context.Background()
 
-	const userID, tokenID, billingChannelID, executionChannelID = 50, 50, 50, 51
+	const userID, payerID, tokenID, billingChannelID, executionChannelID = 50, 51, 50, 50, 51
 	const initialUserQuota, initialTokenQuota, chargedQuota = 10000, 5000, 3000
 	seedUser(t, userID, initialUserQuota)
+	require.NoError(t, model.DB.Create(&model.User{Id: payerID, Username: "mj_wallet_payer", AffCode: "mj-payer", Quota: initialUserQuota}).Error)
 	seedToken(t, tokenID, userID, "sk-midjourney", initialTokenQuota)
 	seedChannel(t, billingChannelID)
 	seedChannel(t, executionChannelID)
 
 	relayInfo := &relaycommon.RelayInfo{
-		UserId:     userID,
-		TokenId:    tokenID,
-		TokenKey:   "sk-midjourney",
-		UserQuota:  initialUserQuota,
-		UsingGroup: "default",
+		UserId:        userID,
+		WalletPayerId: payerID,
+		TokenId:       tokenID,
+		TokenKey:      "sk-midjourney",
+		UserQuota:     initialUserQuota,
+		UsingGroup:    "default",
 		ChannelMeta: &relaycommon.ChannelMeta{
 			ChannelId: billingChannelID,
 		},
@@ -674,20 +676,24 @@ func TestMidjourneyRefundRestoresEveryAccountingElementOnBillingChannel(t *testi
 	assert.Equal(t, billingChannelID, task.BillingChannelId)
 	require.NoError(t, task.Insert())
 
-	billed, err := SettleMidjourneyTaskBilling(relayInfo, task, prepared)
+	persisted := getMidjourneyTask(t, task.Id)
+	relayInfo.WalletPayerId = 0
+	billed, err := SettleMidjourneyTaskBilling(relayInfo, &persisted, prepared)
 	require.NoError(t, err)
 	require.True(t, billed)
-	assert.Equal(t, initialUserQuota-chargedQuota, getUserQuota(t, userID))
+	assert.Equal(t, initialUserQuota-chargedQuota, getUserQuota(t, payerID))
+	assert.Equal(t, initialUserQuota, getUserQuota(t, userID))
 	assert.Equal(t, initialTokenQuota-chargedQuota, getTokenRemainQuota(t, tokenID))
-	persisted := getMidjourneyTask(t, task.Id)
+	persisted = getMidjourneyTask(t, task.Id)
 	assert.Equal(t, chargedQuota, persisted.Quota)
 	assert.Equal(t, tokenID, persisted.TokenId)
 	assert.Equal(t, billingChannelID, persisted.BillingChannelId)
 
 	seedChargedAccounting(t, userID, billingChannelID, tokenID, chargedQuota, 1)
 
-	assert.True(t, RefundMidjourneyQuota(ctx, task, "Composition failed"))
+	assert.True(t, RefundMidjourneyQuota(ctx, &persisted, "Composition failed"))
 	assert.Equal(t, initialUserQuota, getUserQuota(t, userID))
+	assert.Equal(t, initialUserQuota, getUserQuota(t, payerID))
 	assert.Equal(t, initialTokenQuota, getTokenRemainQuota(t, tokenID))
 	assert.Zero(t, getTokenUsedQuota(t, tokenID))
 	usedQuota, requestCount := getUserUsageAccounting(t, userID)
@@ -703,11 +709,12 @@ func TestMidjourneyRefundRestoresEveryAccountingElementOnBillingChannel(t *testi
 	log := getLastLog(t)
 	require.NotNil(t, log)
 	assert.Equal(t, model.LogTypeRefund, log.Type)
+	assert.Equal(t, userID, log.UserId)
 	assert.Equal(t, chargedQuota, log.Quota)
 	assert.Equal(t, tokenID, log.TokenId)
 	assert.Equal(t, billingChannelID, log.ChannelId)
 
-	assert.True(t, RefundMidjourneyQuota(ctx, task, "duplicate poll"))
+	assert.True(t, RefundMidjourneyQuota(ctx, &persisted, "duplicate poll"))
 	assert.Equal(t, int64(1), countLogs(t))
 }
 
@@ -1809,4 +1816,57 @@ func TestSettle_TokenRecalcFallsBackToCompletionTokens(t *testing.T) {
 			assert.Equal(t, testCase.wantQuota, task.Quota)
 		})
 	}
+}
+
+func TestTaskSettlementAndFailureUsePersistedWallet(t *testing.T) {
+	truncate(t)
+	ctx := context.Background()
+	const actorID, payerID, tokenID, missingChannel = 71, 72, 73, 74
+	const actorQuota, payerQuota, tokenQuota = 100, 5000, 4000
+	const reserved, settled = 200, 300
+	seedUser(t, actorID, actorQuota)
+	require.NoError(t, model.DB.Create(&model.User{Id: payerID, Username: "task_wallet_payer", AffCode: "task-payer", Quota: payerQuota - reserved}).Error)
+	seedToken(t, tokenID, actorID, "sk-task-wallet", tokenQuota-reserved)
+	seedChargedAccounting(t, actorID, missingChannel, tokenID, reserved, 1)
+
+	info := &relaycommon.RelayInfo{
+		UserId: actorID, WalletPayerId: payerID,
+		ChannelMeta: &relaycommon.ChannelMeta{ChannelId: missingChannel},
+	}
+	task := model.InitTask("kling", info)
+	task.Quota = reserved
+	task.PrivateData.BillingSource = BillingSourceWallet
+	task.PrivateData.TokenId = tokenID
+	require.NoError(t, task.Insert())
+
+	var stored model.Task
+	require.NoError(t, model.DB.First(&stored, task.ID).Error)
+	assert.Equal(t, actorID, stored.UserId)
+	RecalculateTaskQuota(ctx, &stored, settled, common.NewMessage("adaptor adjustment"))
+	assert.Equal(t, payerQuota-settled, getUserQuota(t, payerID))
+	assert.Equal(t, actorQuota, getUserQuota(t, actorID))
+	assert.Equal(t, tokenQuota-settled, getTokenRemainQuota(t, tokenID))
+	used, requests := getUserUsageAccounting(t, actorID)
+	assert.Equal(t, settled, used)
+	assert.Equal(t, 1, requests)
+	log := getLastLog(t)
+	require.NotNil(t, log)
+	assert.Equal(t, actorID, log.UserId)
+
+	require.NoError(t, model.DB.First(&stored, task.ID).Error)
+	upstreamID := stored.GetUpstreamTaskID()
+	require.Error(t, updateVideoTasks(ctx, stored.Platform, missingChannel, []string{upstreamID}, map[string]*model.Task{upstreamID: &stored}))
+	assert.EqualValues(t, model.TaskStatusFailure, stored.Status)
+	assert.Zero(t, getTaskQuota(t, task.ID))
+	assert.Equal(t, payerQuota, getUserQuota(t, payerID))
+	assert.Equal(t, actorQuota, getUserQuota(t, actorID))
+	assert.Equal(t, tokenQuota, getTokenRemainQuota(t, tokenID))
+	used, requests = getUserUsageAccounting(t, actorID)
+	assert.Zero(t, used)
+	assert.Equal(t, 1, requests)
+	log = getLastLog(t)
+	require.NotNil(t, log)
+	assert.Equal(t, model.LogTypeRefund, log.Type)
+	assert.Equal(t, actorID, log.UserId)
+	assert.Equal(t, tokenID, log.TokenId)
 }

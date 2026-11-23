@@ -119,7 +119,8 @@ type TaskPrivateData struct {
 	// other private task state so public task DTOs cannot expose it by accident.
 	Execution *TaskExecutionSnapshot `json:"execution,omitempty"`
 	// 计费上下文：用于异步退款/差额结算（轮询阶段读取）
-	BillingSource  string              `json:"billing_source,omitempty"`  // "wallet" 或 "subscription"
+	BillingSource  string              `json:"billing_source,omitempty"` // "wallet" 或 "subscription"
+	WalletPayerId  int                 `json:"wallet_payer_id,omitempty"`
 	SubscriptionId int                 `json:"subscription_id,omitempty"` // 订阅 ID，用于订阅退款
 	TokenId        int                 `json:"token_id,omitempty"`        // 令牌 ID，用于令牌额度退款
 	NodeName       string              `json:"node_name,omitempty"`       // 发起任务的节点名，轮询结算阶段据此归属日志而非最后查询节点
@@ -204,6 +205,13 @@ type TaskBillingContext struct {
 	TieredSnapshot  *billingexpr.BillingSnapshot `json:"tiered_snapshot,omitempty"`
 }
 
+func (t *Task) WalletUserID() int {
+	if t.PrivateData.WalletPayerId > 0 {
+		return t.PrivateData.WalletPayerId
+	}
+	return t.UserId
+}
+
 // ResultRetrievable reports whether retrieval surfaces (native query routes,
 // protocol retrieve endpoints, artifact projection) may serve this task.
 func (t *Task) ResultRetrievable() bool {
@@ -235,6 +243,7 @@ func GenerateTaskID() string {
 }
 
 func (p *TaskPrivateData) Scan(val any) error {
+	*p = TaskPrivateData{}
 	bytesValue := jsonScanBytes(val)
 	if len(bytesValue) == 0 {
 		return nil
@@ -245,7 +254,7 @@ func (p *TaskPrivateData) Scan(val any) error {
 func (p TaskPrivateData) Value() (driver.Value, error) {
 	if p.Key == "" && p.UpstreamTaskID == "" && p.ResultURL == "" &&
 		p.Execution == nil && p.BillingSource == "" && p.SubscriptionId == 0 &&
-		p.TokenId == 0 && p.NodeName == "" && p.BillingContext == nil &&
+		p.WalletPayerId == 0 && p.TokenId == 0 && p.NodeName == "" && p.BillingContext == nil &&
 		!p.ResponsesBackground && len(p.PluginState) == 0 && p.PollFailures == 0 && p.Resubmits == 0 &&
 		!p.ResultDiscarded && p.RequestPlugins == nil {
 		return nil, nil
@@ -273,7 +282,7 @@ type SyncTaskQueryParams struct {
 
 func InitTask(platform constant.TaskPlatform, relayInfo *commonRelay.RelayInfo) *Task {
 	properties := Properties{}
-	privateData := TaskPrivateData{}
+	privateData := TaskPrivateData{WalletPayerId: relayInfo.WalletUserID()}
 	if relayInfo != nil && relayInfo.ChannelMeta != nil {
 		// A New API channel may rotate between several gateway tokens, so the
 		// task keeps the key that submitted it and polls with the same identity.

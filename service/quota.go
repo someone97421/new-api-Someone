@@ -91,7 +91,7 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 	if relayInfo.UsePrice {
 		return 0, nil
 	}
-	userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
+	userQuota, err := model.GetUserQuota(relayInfo.WalletUserID(), false)
 	if err != nil {
 		return 0, err
 	}
@@ -454,9 +454,9 @@ func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, pre
 	} else {
 		// Wallet
 		if quota > 0 {
-			err = model.DecreaseUserQuota(relayInfo.UserId, quota, false)
+			err = model.DecreaseUserQuota(relayInfo.WalletUserID(), quota, false)
 		} else {
-			err = model.IncreaseUserQuota(relayInfo.UserId, -quota, false)
+			err = model.IncreaseUserQuota(relayInfo.WalletUserID(), -quota, false)
 		}
 		if err != nil {
 			return result, err
@@ -488,6 +488,15 @@ func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, pre
 func checkAndSendQuotaNotify(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQuota int) {
 	gopool.Go(func() {
 		userSetting := relayInfo.UserSetting
+		userID, email := relayInfo.WalletUserID(), relayInfo.UserEmail
+		if userID != relayInfo.UserId {
+			payer, err := model.GetUserCache(userID)
+			if err != nil {
+				common.SysError(common.LogText("failed to send quota notify to user %d: %s", userID, err.Error()))
+				return
+			}
+			userSetting, email = payer.GetSetting(), payer.Email
+		}
 		// UserQuota is the balance before this request; quota plus
 		// preConsumedQuota is what the request finally cost.
 		balanceAfter := relayInfo.UserQuota - (quota + preConsumedQuota)
@@ -497,9 +506,9 @@ func checkAndSendQuotaNotify(relayInfo *relaycommon.RelayInfo, quota int, preCon
 		lang := userSetting.Language
 		prompt := i18n.Translate(lang, i18n.MsgNotifyQuotaLowTitle)
 		content, values := quotaNotifyContent(lang, userSetting.NotifyType, prompt, logger.FormatQuota(balanceAfter))
-		err := NotifyUser(relayInfo.UserId, relayInfo.UserEmail, relayInfo.UserSetting, dto.NewNotify(dto.NotifyTypeQuotaExceed, prompt, content, values))
+		err := NotifyUser(userID, email, userSetting, dto.NewNotify(dto.NotifyTypeQuotaExceed, prompt, content, values))
 		if err != nil {
-			common.SysError(common.LogText("failed to send quota notify to user %d: %s", relayInfo.UserId, err.Error()))
+			common.SysError(common.LogText("failed to send quota notify to user %d: %s", userID, err.Error()))
 		}
 	})
 }

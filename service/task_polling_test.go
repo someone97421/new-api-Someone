@@ -749,6 +749,67 @@ func TestRunTaskPollingOnceDoesNotRefundHistoricalFailedTask(t *testing.T) {
 	assert.Equal(t, int64(0), countLogs(t))
 }
 
+func TestRunTaskPollingOnceIsolatesSharedUpstreamIDByChannel(t *testing.T) {
+	previousLimit := constant.TaskQueryLimit
+	constant.TaskQueryLimit = 100
+	t.Cleanup(func() { constant.TaskQueryLimit = previousLimit })
+
+	const (
+		actorID, successPayerID, failurePayerID = 406, 407, 408
+		successChannel, missingChannel          = 409, 410
+		upstreamID                              = "shared-upstream-id"
+		walletBalance, reserved                 = 10_000, 1_200
+	)
+	result := relaycommon.TaskInfo{TaskID: upstreamID, Status: model.TaskStatusSuccess, Progress: "100%"}
+	for _, tc := range []struct {
+		name    string
+		adaptor TaskPollingAdaptor
+	}{
+		{"per-task", &scriptedPollingAdaptor{parse: &result}},
+		{"batch", &scriptedBatchPollingAdaptor{results: map[string]*BatchTaskResult{upstreamID: {TaskInfo: result}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			truncate(t)
+			seedUser(t, actorID, walletBalance)
+			require.NoError(t, model.DB.Create(&[]model.User{
+				{Id: successPayerID, Username: "poll_success_payer", AffCode: "poll-success", Quota: walletBalance},
+				{Id: failurePayerID, Username: "poll_failure_payer", AffCode: "poll-failure", Quota: walletBalance},
+			}).Error)
+			seedTaskPollingChannel(t, successChannel, true)
+			success := makeTask(actorID, successChannel, reserved, 0, BillingSourceWallet, 0)
+			success.TaskID = "task_valid_channel"
+			success.Platform = "kling"
+			success.SubmitTime = time.Now().Unix()
+			success.PrivateData.UpstreamTaskID = upstreamID
+			success.PrivateData.WalletPayerId = successPayerID
+			require.NoError(t, model.DB.Create(success).Error)
+			failure := makeTask(actorID, missingChannel, reserved, 0, BillingSourceWallet, 0)
+			failure.TaskID = "task_missing_channel"
+			failure.Platform = success.Platform
+			failure.SubmitTime = success.SubmitTime
+			failure.PrivateData.UpstreamTaskID = upstreamID
+			failure.PrivateData.WalletPayerId = failurePayerID
+			require.NoError(t, model.DB.Create(failure).Error)
+
+			previousFactory := GetTaskAdaptorFunc
+			GetTaskAdaptorFunc = func(constant.TaskPlatform) TaskPollingAdaptor { return tc.adaptor }
+			t.Cleanup(func() { GetTaskAdaptorFunc = previousFactory })
+			require.Equal(t, 2, RunTaskPollingOnce(t.Context(), nil).UnfinishedTasks)
+
+			require.NoError(t, model.DB.First(success, success.ID).Error)
+			require.NoError(t, model.DB.First(failure, failure.ID).Error)
+			assert.EqualValues(t, model.TaskStatusSuccess, success.Status)
+			assert.EqualValues(t, model.TaskStatusFailure, failure.Status)
+			assert.Equal(t, reserved, success.Quota)
+			assert.Zero(t, failure.Quota)
+			assert.Equal(t, walletBalance, getUserQuota(t, successPayerID))
+			assert.Equal(t, walletBalance+reserved, getUserQuota(t, failurePayerID))
+			assert.Equal(t, walletBalance, getUserQuota(t, actorID))
+			assert.EqualValues(t, 1, countLogs(t))
+		})
+	}
+}
+
 func TestRunTaskPollingOnceContinuesAtFullProgress(t *testing.T) {
 	previousLimit := constant.TaskQueryLimit
 	constant.TaskQueryLimit = 100
